@@ -4,8 +4,9 @@ local computer = require("computer")
 local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
+local keyboard = require("keyboard")
 
-local VERSION = "1.2.1"
+local VERSION = "1.2.2"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/"
 local SCRIPT_PATH = "/home/stratcom/node.lua"
 local CONFIG_PATH = "/home/stratcom/config.lua"
@@ -212,8 +213,6 @@ local function sendHeartbeat()
     lastHeartbeat = computer.uptime()
 end
 
--- These packet types are emitted by nodes/central as responses or telemetry.
--- A field node must never answer them, or two nodes can create a feedback loop.
 local IGNORE_PACKET = {
     HELLO = true,
     HEARTBEAT = true,
@@ -225,9 +224,7 @@ local IGNORE_PACKET = {
 }
 
 local function handleCommand(remoteAddress, command, arg1, arg2)
-    if IGNORE_PACKET[command] then
-        return
-    end
+    if IGNORE_PACKET[command] then return end
 
     if command == "PING" then
         log("PING <- " .. remoteAddress)
@@ -271,8 +268,6 @@ local function handleCommand(remoteAddress, command, arg1, arg2)
         send(remoteAddress, "ACK", NODE_ID, "SHUTDOWN_NODE", true)
         running = false
     else
-        -- Unknown network traffic is ignored rather than answered. This prevents
-        -- malformed or third-party packets from creating an error-response loop.
         log("Ignored unknown packet: " .. tostring(command))
     end
 end
@@ -319,11 +314,31 @@ broadcast("HELLO", NODE_ID, NODE_ROLE)
 sendHeartbeat()
 
 while running do
-    local eventName, _, remoteAddress, port, _, command, arg1, arg2 =
-        event.pull(1, "modem_message")
+    local eventName, address, arg1, arg2, arg3, arg4, arg5 = event.pull(1)
 
-    if eventName == "modem_message" and port == PORT then
-        handleCommand(remoteAddress, command, arg1, arg2)
+    if eventName == "key_down" then
+        local keyCode = arg2
+        if keyCode == keyboard.keys.c and keyboard.isControlDown(address) then
+            log("Local Ctrl+C shutdown requested")
+            running = false
+        end
+    elseif eventName == "modem_message" then
+        local remoteAddress = arg1
+        local port = arg2
+        local command = arg4
+        local commandArg1 = arg5
+        local commandArg2 = select(7, event.pull(0))
+
+        -- modem_message layout from event.pull is:
+        -- name, localAddress, remoteAddress, port, distance, ...
+        -- Re-read using the captured positions below instead of filtering out
+        -- keyboard events.
+        remoteAddress = arg1
+        port = arg2
+
+        if port == PORT then
+            handleCommand(remoteAddress, command, commandArg1, commandArg2)
+        end
     end
 
     if computer.uptime() - lastHeartbeat >= HEARTBEAT_INTERVAL then
