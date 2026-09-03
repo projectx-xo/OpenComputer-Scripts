@@ -5,7 +5,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "1.1.2"
+local VERSION = "1.2.0"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/"
 local SCRIPT_PATH = "/home/stratcom/node.lua"
 local CONFIG_PATH = "/home/stratcom/config.lua"
@@ -31,15 +31,15 @@ local function isNewer(remote, localVersion)
     return rc > lc
 end
 
-local function cacheBust(url, token)
+local function cacheBust(url)
+    local token = tostring(math.floor(computer.uptime() * 1000)) .. "-" .. tostring(math.random(100000, 999999))
     local separator = url:find("?", 1, true) and "&" or "?"
-    token = token or tostring(math.floor(computer.uptime() * 1000))
-    return url .. separator .. "cb=" .. tostring(token)
+    return url .. separator .. "cb=" .. token
 end
 
 local function download(url, path)
     if filesystem.exists(path) then filesystem.remove(path) end
-    local command = string.format('wget -f "%s" "%s"', url, path)
+    local command = 'wget -f "' .. cacheBust(url) .. '" "' .. path .. '"'
     local ok = shell.execute(command)
     return ok and filesystem.exists(path)
 end
@@ -55,8 +55,7 @@ end
 local function checkForUpdates()
     print("[UPDATE] Checking GitHub...")
 
-    local versionUrl = cacheBust(BASE_URL .. "version.txt")
-    if not download(versionUrl, TMP_VERSION) then
+    if not download(BASE_URL .. "version.txt", TMP_VERSION) then
         print("[UPDATE] GitHub unavailable; continuing with v" .. VERSION)
         return false
     end
@@ -68,8 +67,7 @@ local function checkForUpdates()
     end
 
     print("[UPDATE] v" .. remoteVersion .. " available; downloading...")
-    local scriptUrl = cacheBust(BASE_URL .. "node.lua", remoteVersion)
-    if not download(scriptUrl, TMP_SCRIPT) then
+    if not download(BASE_URL .. "node.lua", TMP_SCRIPT) then
         print("[UPDATE] Download failed; continuing with v" .. VERSION)
         return false
     end
@@ -112,6 +110,7 @@ end
 
 local modem = findComponent("modem")
 local launchPad = findComponent("ntm_launch_pad")
+local inventory = findComponent("inventory_controller")
 
 if not modem then io.stderr:write("FATAL: No modem detected.\n"); return end
 if not launchPad then io.stderr:write("FATAL: No ntm_launch_pad detected.\n"); return end
@@ -119,14 +118,50 @@ if not launchPad then io.stderr:write("FATAL: No ntm_launch_pad detected.\n"); r
 local armed = false
 local running = true
 local lastHeartbeat = 0
+local launcherInventorySide = nil
 
 local function log(message)
     print(string.format("[%06.1f] %s", computer.uptime(), tostring(message)))
 end
 
+local function findLauncherInventorySide()
+    if not inventory then return nil end
+
+    for side = 0, 5 do
+        local ok, size = pcall(inventory.getInventorySize, side)
+        if ok and size == 7 then
+            return side
+        end
+    end
+
+    return nil
+end
+
+local function getMissileInfo()
+    if not inventory then
+        return "", "", 0
+    end
+
+    if launcherInventorySide == nil then
+        launcherInventorySide = findLauncherInventorySide()
+    end
+
+    if launcherInventorySide == nil then
+        return "", "", 0
+    end
+
+    local ok, stack = pcall(inventory.getStackInSlot, launcherInventorySide, 1)
+    if not ok or not stack then
+        return "", "", 0
+    end
+
+    return tostring(stack.name or ""), tostring(stack.label or ""), tonumber(stack.size) or 0
+end
+
 local function getStatus()
     local energy, maxEnergy = launchPad.getEnergyInfo()
     local fuel, fuelMax, fuelType, oxidizer, oxidizerMax, oxidizerType = launchPad.getFluid()
+    local missileName, missileLabel, missileCount = getMissileInfo()
     local tier = launchPad.getTier()
     if tier == nil then tier = -1 end
 
@@ -142,6 +177,9 @@ local function getStatus()
         oxidizer = oxidizer or 0,
         oxidizerMax = oxidizerMax or 0,
         oxidizerType = tostring(oxidizerType),
+        missileName = missileName,
+        missileLabel = missileLabel,
+        missileCount = missileCount,
     }
 end
 
@@ -220,6 +258,7 @@ local function handleCommand(remoteAddress, command, arg1, arg2)
 end
 
 modem.open(PORT)
+launcherInventorySide = findLauncherInventorySide()
 local initialStatus = getStatus()
 
 print("")
@@ -231,6 +270,8 @@ print("Node ID:     " .. NODE_ID)
 print("Role:        " .. NODE_ROLE)
 print("Port:        " .. PORT)
 print("Launch Pad:  CONNECTED")
+print("Inventory:   " .. (launcherInventorySide ~= nil and ("CONNECTED (side " .. launcherInventorySide .. ")") or "UNAVAILABLE"))
+print("Missile:     " .. (initialStatus.missileLabel ~= "" and initialStatus.missileLabel or "UNKNOWN"))
 print("Armed:       " .. tostring(initialStatus.armed))
 print("Ready:       " .. tostring(initialStatus.ready))
 print("Tier:        " .. tostring(initialStatus.tier))
