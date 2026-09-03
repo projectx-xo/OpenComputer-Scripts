@@ -5,7 +5,9 @@ local filesystem = require("filesystem")
 local serialization = require("serialization")
 local keyboard = require("keyboard")
 
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
+local PROTOCOL = 2
+local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
 local RUNTIME_DIR = "/home/stratcom/runtime"
 local CURRENT_RUNTIME = RUNTIME_DIR .. "/current.lua"
@@ -23,11 +25,14 @@ if not filesystem.exists(RUNTIME_DIR) then
 end
 
 local config = dofile(CONFIG_PATH)
-local NODE_ID = assert(config.id, "config.id is required")
+local NODE_ID = string.upper(assert(config.id, "config.id is required"))
 local NODE_ROLE = assert(config.role, "config.role is required")
 local MGMT_PORT = tonumber(config.managementPort or config.port) or 4510
 local OP_PORT = tonumber(config.operationalPort) or 4511
 local HEARTBEAT_INTERVAL = tonumber(config.heartbeatInterval) or 5
+local DEFAULT_TTL = tonumber(config.meshTtl) or 6
+local SEEN_TTL = 30
+local PRUNE_INTERVAL = 10
 
 local modemAddress = component.list("modem")()
 if not modemAddress then
@@ -36,15 +41,22 @@ if not modemAddress then
 end
 
 local modem = component.proxy(modemAddress)
-local controllerAddress = nil
+local controllerId = nil
 local runtimeModule = nil
 local runtimeRunning = false
 local deployment = nil
 local running = true
 local lastHeartbeat = 0
+local lastPrune = 0
+local messageCounter = 0
+local seenMessages = {}
+
+local function now()
+    return computer.uptime()
+end
 
 local function log(message)
-    print(string.format("[%06.1f] %s", computer.uptime(), tostring(message)))
+    print(string.format("[%06.1f] %s", now(), tostring(message)))
 end
 
 local function readFirstLine(path)
@@ -74,36 +86,99 @@ local function runtimeState()
     return "missing"
 end
 
-local function sendMgmt(remoteAddress, messageType, ...)
-    modem.send(remoteAddress, MGMT_PORT, messageType, NODE_ID, ...)
+local function nextMessageId()
+    messageCounter = messageCounter + 1
+    return table.concat({
+        NODE_ID,
+        tostring(math.floor(now() * 1000)),
+        tostring(messageCounter),
+        tostring(math.random(100000, 999999)),
+    }, "-")
+end
+
+local function pruneSeen()
+    local cutoff = now() - SEEN_TTL
+    for id, timestamp in pairs(seenMessages) do
+        if timestamp < cutoff then seenMessages[id] = nil end
+    end
+    lastPrune = now()
+end
+
+local function validEnvelope(envelope)
+    return type(envelope) == "table"
+        and envelope.protocol == PROTOCOL
+        and type(envelope.id) == "string"
+        and type(envelope.source) == "string"
+        and type(envelope.destination) == "string"
+        and type(envelope.kind) == "string"
+        and type(envelope.ttl) == "number"
+        and type(envelope.payload) == "table"
+end
+
+local function transmitEnvelope(port, envelope)
+    local ok, encoded = pcall(serialization.serialize, envelope)
+    if not ok then return false end
+    modem.broadcast(port, "STRATCOM_NET", encoded)
+    return true
+end
+
+local function originate(port, destination, kind, payload, ttl)
+    local envelope = {
+        protocol = PROTOCOL,
+        id = nextMessageId(),
+        source = NODE_ID,
+        destination = string.upper(tostring(destination)),
+        ttl = tonumber(ttl) or DEFAULT_TTL,
+        kind = tostring(kind),
+        payload = payload or {},
+    }
+
+    seenMessages[envelope.id] = now()
+    return transmitEnvelope(port, envelope)
+end
+
+local function relayEnvelope(port, envelope)
+    if envelope.ttl <= 0 then return end
+    envelope.ttl = envelope.ttl - 1
+    transmitEnvelope(port, envelope)
+end
+
+local function sendMgmt(messageType, ...)
+    return originate(MGMT_PORT, CENTRAL_ID, messageType, {...})
 end
 
 local function broadcastHello()
-    modem.broadcast(
+    originate(
         MGMT_PORT,
+        CENTRAL_ID,
         "BOOT_HELLO",
-        NODE_ID,
-        NODE_ROLE,
-        VERSION,
-        installedRuntimeVersion(),
-        runtimeState()
+        {
+            NODE_ID,
+            NODE_ROLE,
+            VERSION,
+            installedRuntimeVersion(),
+            runtimeState(),
+        }
     )
 end
 
 local function broadcastHeartbeat()
-    modem.broadcast(
+    originate(
         MGMT_PORT,
+        CENTRAL_ID,
         "BOOT_HEARTBEAT",
-        NODE_ID,
-        NODE_ROLE,
-        VERSION,
-        installedRuntimeVersion(),
-        runtimeState()
+        {
+            NODE_ID,
+            NODE_ROLE,
+            VERSION,
+            installedRuntimeVersion(),
+            runtimeState(),
+        }
     )
-    lastHeartbeat = computer.uptime()
+    lastHeartbeat = now()
 end
 
-local function sendInfo(remoteAddress)
+local function sendInfo()
     local info = {
         id = NODE_ID,
         role = NODE_ROLE,
@@ -112,10 +187,12 @@ local function sendInfo(remoteAddress)
         runtimeState = runtimeState(),
         managementPort = MGMT_PORT,
         operationalPort = OP_PORT,
-        controller = controllerAddress,
+        controller = controllerId,
+        meshProtocol = PROTOCOL,
+        meshTtl = DEFAULT_TTL,
     }
 
-    sendMgmt(remoteAddress, "BOOT_INFO", serialization.serialize(info))
+    sendMgmt("BOOT_INFO", serialization.serialize(info))
 end
 
 local function stopRuntime()
@@ -147,14 +224,12 @@ local function startRuntime()
         role = NODE_ROLE,
         managementPort = MGMT_PORT,
         operationalPort = OP_PORT,
-        send = function(remoteAddress, responseType, ...)
-            modem.send(
-                remoteAddress,
+        send = function(destination, responseType, ...)
+            originate(
                 OP_PORT,
+                destination or CENTRAL_ID,
                 "RUNTIME",
-                NODE_ID,
-                responseType,
-                ...
+                {responseType, ...}
             )
         end,
         log = log,
@@ -178,19 +253,19 @@ local function abortDeployment()
     if filesystem.exists(TEMP_RUNTIME) then filesystem.remove(TEMP_RUNTIME) end
 end
 
-local function beginDeployment(remoteAddress, version, totalChunks)
+local function beginDeployment(version, totalChunks)
     stopRuntime()
     abortDeployment()
 
     local total = tonumber(totalChunks)
     if not total or total < 1 then
-        sendMgmt(remoteAddress, "MGMT_ERROR", "DEPLOY_BEGIN", "INVALID_CHUNK_COUNT")
+        sendMgmt("MGMT_ERROR", "DEPLOY_BEGIN", "INVALID_CHUNK_COUNT")
         return
     end
 
     local file, err = io.open(TEMP_RUNTIME, "w")
     if not file then
-        sendMgmt(remoteAddress, "MGMT_ERROR", "DEPLOY_BEGIN", tostring(err))
+        sendMgmt("MGMT_ERROR", "DEPLOY_BEGIN", tostring(err))
         return
     end
 
@@ -201,19 +276,18 @@ local function beginDeployment(remoteAddress, version, totalChunks)
         file = file,
     }
 
-    sendMgmt(remoteAddress, "MGMT_ACK", "DEPLOY_BEGIN", deployment.version)
+    sendMgmt("MGMT_ACK", "DEPLOY_BEGIN", deployment.version)
 end
 
-local function receiveChunk(remoteAddress, index, data)
+local function receiveChunk(index, data)
     if not deployment then
-        sendMgmt(remoteAddress, "MGMT_ERROR", "DEPLOY_CHUNK", "NO_DEPLOYMENT")
+        sendMgmt("MGMT_ERROR", "DEPLOY_CHUNK", "NO_DEPLOYMENT")
         return
     end
 
     local chunkIndex = tonumber(index)
     if chunkIndex ~= deployment.next then
         sendMgmt(
-            remoteAddress,
             "MGMT_ERROR",
             "DEPLOY_CHUNK",
             "EXPECTED_" .. tostring(deployment.next)
@@ -226,20 +300,20 @@ local function receiveChunk(remoteAddress, index, data)
     deployment.next = deployment.next + 1
 end
 
-local function commitDeployment(remoteAddress, version)
+local function commitDeployment(version)
     if not deployment then
-        sendMgmt(remoteAddress, "MGMT_ERROR", "DEPLOY_COMMIT", "NO_DEPLOYMENT")
+        sendMgmt("MGMT_ERROR", "DEPLOY_COMMIT", "NO_DEPLOYMENT")
         return
     end
 
     if tostring(version) ~= deployment.version then
-        sendMgmt(remoteAddress, "MGMT_ERROR", "DEPLOY_COMMIT", "VERSION_MISMATCH")
+        sendMgmt("MGMT_ERROR", "DEPLOY_COMMIT", "VERSION_MISMATCH")
         abortDeployment()
         return
     end
 
     if deployment.next ~= deployment.total + 1 then
-        sendMgmt(remoteAddress, "MGMT_ERROR", "DEPLOY_COMMIT", "MISSING_CHUNKS")
+        sendMgmt("MGMT_ERROR", "DEPLOY_COMMIT", "MISSING_CHUNKS")
         abortDeployment()
         return
     end
@@ -250,7 +324,6 @@ local function commitDeployment(remoteAddress, version)
     local chunk, loadErr = loadfile(TEMP_RUNTIME)
     if not chunk then
         sendMgmt(
-            remoteAddress,
             "MGMT_DEPLOY_RESULT",
             false,
             deployment.version,
@@ -270,7 +343,6 @@ local function commitDeployment(remoteAddress, version)
             filesystem.rename(PREVIOUS_RUNTIME, CURRENT_RUNTIME)
         end
         sendMgmt(
-            remoteAddress,
             "MGMT_DEPLOY_RESULT",
             false,
             deployment.version,
@@ -283,50 +355,107 @@ local function commitDeployment(remoteAddress, version)
     local deployedVersion = deployment.version
     deployment = nil
     writeText(VERSION_PATH, deployedVersion)
-    sendMgmt(remoteAddress, "MGMT_DEPLOY_RESULT", true, deployedVersion, "OK")
+    sendMgmt("MGMT_DEPLOY_RESULT", true, deployedVersion, "OK")
 end
 
-local function managementCommand(remoteAddress, command, arg1, arg2, arg3)
-    if command == "DISCOVER" then
+local function managementCommand(source, payload)
+    local command = payload[1]
+    local arg1 = payload[2]
+    local arg2 = payload[3]
+
+    if command == "DISCOVER" and source == CENTRAL_ID then
         broadcastHello()
         return
     end
 
-    if command == "CLAIM" then
-        if controllerAddress == nil or controllerAddress == remoteAddress then
-            controllerAddress = remoteAddress
-            sendMgmt(remoteAddress, "MGMT_ACK", "CLAIM", true)
-            sendInfo(remoteAddress)
-            log("Claimed by central " .. remoteAddress)
+    if command == "CLAIM" and source == CENTRAL_ID then
+        if controllerId == nil or controllerId == CENTRAL_ID then
+            controllerId = CENTRAL_ID
+            sendMgmt("MGMT_ACK", "CLAIM", true)
+            sendInfo()
+            log("Claimed by central")
         else
-            sendMgmt(remoteAddress, "MGMT_ERROR", "CLAIM", "ALREADY_CLAIMED")
+            sendMgmt("MGMT_ERROR", "CLAIM", "ALREADY_CLAIMED")
         end
         return
     end
 
-    if remoteAddress ~= controllerAddress then
-        return
-    end
+    if source ~= controllerId or source ~= CENTRAL_ID then return end
 
     if command == "INFO" then
-        sendInfo(remoteAddress)
+        sendInfo()
     elseif command == "DEPLOY_BEGIN" then
-        beginDeployment(remoteAddress, arg1, arg2)
+        beginDeployment(arg1, arg2)
     elseif command == "DEPLOY_CHUNK" then
-        receiveChunk(remoteAddress, arg1, arg2)
+        receiveChunk(arg1, arg2)
     elseif command == "DEPLOY_COMMIT" then
-        commitDeployment(remoteAddress, arg1)
+        commitDeployment(arg1)
     elseif command == "START" then
         local ok, err = startRuntime()
-        sendMgmt(remoteAddress, "MGMT_ACK", "START", ok, err or "OK")
+        sendMgmt("MGMT_ACK", "START", ok, err or "OK")
     elseif command == "STOP" then
         stopRuntime()
-        sendMgmt(remoteAddress, "MGMT_ACK", "STOP", true)
+        sendMgmt("MGMT_ACK", "STOP", true)
     elseif command == "RESTART" then
         stopRuntime()
         local ok, err = startRuntime()
-        sendMgmt(remoteAddress, "MGMT_ACK", "RESTART", ok, err or "OK")
+        sendMgmt("MGMT_ACK", "RESTART", ok, err or "OK")
     end
+end
+
+local function runtimeCommand(source, payload)
+    if source ~= controllerId or source ~= CENTRAL_ID then return end
+    if not runtimeRunning or not runtimeModule then return end
+    if type(runtimeModule.onMessage) ~= "function" then return end
+
+    local ok, err = pcall(
+        runtimeModule.onMessage,
+        source,
+        payload[1],
+        payload[2],
+        payload[3]
+    )
+
+    if not ok then
+        originate(
+            OP_PORT,
+            CENTRAL_ID,
+            "RUNTIME",
+            {"ERROR", "RUNTIME_EXCEPTION", tostring(err)}
+        )
+    end
+end
+
+local function handleEnvelope(port, envelope)
+    if not validEnvelope(envelope) then return end
+    if seenMessages[envelope.id] then return end
+
+    seenMessages[envelope.id] = now()
+
+    local destination = string.upper(envelope.destination)
+    local localDelivery = destination == NODE_ID or destination == "*"
+
+    if localDelivery then
+        if port == MGMT_PORT and envelope.kind == "MGMT" then
+            managementCommand(string.upper(envelope.source), envelope.payload)
+        elseif port == OP_PORT and envelope.kind == "CMD" then
+            runtimeCommand(string.upper(envelope.source), envelope.payload)
+        end
+    end
+
+    if destination ~= NODE_ID and envelope.ttl > 0 then
+        relayEnvelope(port, envelope)
+    end
+end
+
+local function handleModemMessage(port, marker, encoded)
+    if (port ~= MGMT_PORT and port ~= OP_PORT) or marker ~= "STRATCOM_NET" then
+        return
+    end
+
+    local ok, envelope = pcall(serialization.unserialize, encoded)
+    if not ok then return end
+    handleEnvelope(port, envelope)
 end
 
 modem.open(MGMT_PORT)
@@ -341,6 +470,7 @@ print("Node ID:     " .. NODE_ID)
 print("Role:        " .. NODE_ROLE)
 print("Mgmt Port:   " .. MGMT_PORT)
 print("Op Port:     " .. OP_PORT)
+print("Mesh:        protocol " .. PROTOCOL .. " / TTL " .. DEFAULT_TTL)
 print("Runtime:     " .. installedRuntimeVersion() .. " / " .. runtimeState())
 print("")
 print("Waiting for central command...")
@@ -357,10 +487,7 @@ while running do
         a3,
         a4,
         a5,
-        a6,
-        a7,
-        a8,
-        a9 = event.pull(1)
+        a6 = event.pull(1)
 
     if eventName == "key_down" then
         local keyCode = a3
@@ -370,33 +497,10 @@ while running do
             running = false
         end
     elseif eventName == "modem_message" then
-        local remoteAddress = a2
         local port = a3
-        local messageType = a5
-
-        if port == MGMT_PORT and messageType == "MGMT" then
-            managementCommand(remoteAddress, a6, a7, a8, a9)
-        elseif
-            port == OP_PORT
-            and messageType == "CMD"
-            and remoteAddress == controllerAddress
-            and runtimeRunning
-            and runtimeModule
-            and type(runtimeModule.onMessage) == "function"
-        then
-            local ok, err = pcall(runtimeModule.onMessage, remoteAddress, a6, a7, a8)
-            if not ok then
-                modem.send(
-                    remoteAddress,
-                    OP_PORT,
-                    "RUNTIME",
-                    NODE_ID,
-                    "ERROR",
-                    "RUNTIME_EXCEPTION",
-                    tostring(err)
-                )
-            end
-        end
+        local marker = a5
+        local encoded = a6
+        handleModemMessage(port, marker, encoded)
     end
 
     if runtimeRunning and runtimeModule and type(runtimeModule.tick) == "function" then
@@ -407,8 +511,12 @@ while running do
         end
     end
 
-    if computer.uptime() - lastHeartbeat >= HEARTBEAT_INTERVAL then
+    if now() - lastHeartbeat >= HEARTBEAT_INTERVAL then
         broadcastHeartbeat()
+    end
+
+    if now() - lastPrune >= PRUNE_INTERVAL then
+        pruneSeen()
     end
 end
 
