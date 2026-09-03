@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.1.1"
+local VERSION = "2.1.2"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -25,6 +25,7 @@ local MGMT_PORT = 4510
 local OP_PORT = 4511
 local OFFLINE_AFTER = 15
 local RECONCILE_INTERVAL = 10
+local STATUS_INTERVAL = 5
 local CHUNK_SIZE = 2048
 local DEPLOY_TIMEOUT = 3
 local DEPLOY_MAX_RETRIES = 4
@@ -73,7 +74,6 @@ end
 
 local function checkForUpdates()
     print("[UPDATE] Checking central software...")
-
     if not download(BASE_URL .. "central/version.txt", TMP_VERSION) then
         print("[UPDATE] GitHub unavailable; continuing with v" .. VERSION)
         return false
@@ -210,14 +210,12 @@ local function originate(port, destination, kind, payload, ttl)
         kind = tostring(kind),
         payload = payload or {},
     }
-
     seenMessages[envelope.id] = now()
     return transmitEnvelope(port, envelope)
 end
 
 local function syncRepository()
     print("[REPO] Syncing runtime repository from GitHub...")
-
     if download(BASE_URL .. "runtime/manifest.lua", TMP_MANIFEST) then
         local chunk, err = loadfile(TMP_MANIFEST)
         if not chunk then
@@ -242,11 +240,9 @@ local function syncRepository()
 
     desiredRuntimes = {}
     local loaded = {}
-
     for role, entry in pairs(manifest.roles) do
         if type(entry) == "table" and entry.version and entry.path then
             local localPath = REPOSITORY_DIR .. "/" .. tostring(role) .. ".lua"
-
             if not loaded[entry.path] then
                 if not download(BASE_URL .. entry.path, localPath) then
                     if not filesystem.exists(localPath) then
@@ -277,7 +273,6 @@ local function syncRepository()
             end
         end
     end
-
     return true
 end
 
@@ -291,9 +286,27 @@ local function sendOperational(node, command, ...)
     return originate(OP_PORT, node.id, "CMD", {command, ...})
 end
 
+local function requestRuntimeStatus(node)
+    if not node or not nodeOnline(node) or not node.claimed then return false end
+    if node.runtimeState ~= "running" or node.deploying then return false end
+    node.lastStatusRequest = now()
+    return sendOperational(node, "STATUS")
+end
+
+local function pollRuntimeStatus()
+    for _, node in pairs(nodes) do
+        if nodeOnline(node)
+            and node.claimed
+            and node.runtimeState == "running"
+            and not node.deploying
+        then
+            requestRuntimeStatus(node)
+        end
+    end
+end
+
 local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeState)
     if not id then return nil end
-
     id = string.upper(tostring(id))
     local node = nodes[id]
     local discovered = false
@@ -319,11 +332,7 @@ local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeS
         print("")
         print("[NET] Bootstrap discovered: " .. id .. " (" .. node.role .. ")")
     end
-
-    if not node.claimed then
-        sendMgmt(node, "CLAIM")
-    end
-
+    if not node.claimed then sendMgmt(node, "CLAIM") end
     return node
 end
 
@@ -377,7 +386,6 @@ end
 
 local function deployNode(node)
     if not node or node.deploying or not node.claimed then return false end
-
     local desired = desiredRuntimes[node.role]
     if not desired then
         print("[DEPLOY] No runtime configured for role " .. tostring(node.role))
@@ -406,7 +414,6 @@ local function deployNode(node)
         "[DEPLOY] " .. node.id .. " <- " .. desired.version
             .. " (" .. totalChunks .. " chunks, ACK mode)"
     )
-
     return sendDeploymentStep(node, false)
 end
 
@@ -423,13 +430,8 @@ local function checkDeploymentTimeouts()
 end
 
 local function reconcileNode(node, force)
-    if not node or not node.claimed or not nodeOnline(node) or node.deploying then
-        return
-    end
-
-    if not force and node.lastReconcile and now() - node.lastReconcile < RECONCILE_INTERVAL then
-        return
-    end
+    if not node or not node.claimed or not nodeOnline(node) or node.deploying then return end
+    if not force and node.lastReconcile and now() - node.lastReconcile < RECONCILE_INTERVAL then return end
 
     node.lastReconcile = now()
     local desired = desiredRuntimes[node.role]
@@ -440,18 +442,17 @@ local function reconcileNode(node, force)
     elseif node.runtimeState ~= "running" then
         print("[MGMT] Starting runtime on " .. node.id)
         sendMgmt(node, "START")
+    else
+        requestRuntimeStatus(node)
     end
 end
 
 local function reconcileAll(force)
-    for _, node in pairs(nodes) do
-        reconcileNode(node, force)
-    end
+    for _, node in pairs(nodes) do reconcileNode(node, force) end
 end
 
 local function applyRuntimeStatus(node, status)
     if not node or type(status) ~= "table" then return end
-
     node.armed = status.armed
     node.ready = status.ready
     node.tier = status.tier
@@ -475,15 +476,15 @@ local function handleMgmtEnvelope(envelope)
     local payload = envelope.payload
 
     if envelope.kind == "BOOT_HELLO" or envelope.kind == "BOOT_HEARTBEAT" then
-        local node = registerNode(
-            source,
-            payload[2],
-            payload[3],
-            payload[4],
-            payload[5]
-        )
-
-        if node and node.claimed then reconcileNode(node, false) end
+        local node = registerNode(source, payload[2], payload[3], payload[4], payload[5])
+        if node and node.claimed then
+            reconcileNode(node, false)
+            if node.runtimeState == "running"
+                and (not node.lastStatus or now() - node.lastStatus >= STATUS_INTERVAL)
+            then
+                requestRuntimeStatus(node)
+            end
+        end
         return
     end
 
@@ -500,6 +501,7 @@ local function handleMgmtEnvelope(envelope)
             node.claimed = true
             print("[MGMT] Claimed " .. node.id)
             reconcileNode(node, true)
+            if node.runtimeState == "running" then requestRuntimeStatus(node) end
         elseif command == "DEPLOY_BEGIN" and success then
             local deployment = node.deployment
             if node.deploying and deployment and deployment.phase == "begin" then
@@ -519,7 +521,6 @@ local function handleMgmtEnvelope(envelope)
                     "[DEPLOY] " .. node.id .. " chunk "
                         .. acknowledged .. "/" .. deployment.totalChunks .. " ACK"
                 )
-
                 if acknowledged >= deployment.totalChunks then
                     deployment.phase = "commit"
                 else
@@ -528,13 +529,19 @@ local function handleMgmtEnvelope(envelope)
                 sendDeploymentStep(node, false)
             end
         elseif command == "START" then
-            if success then node.runtimeState = "running" end
+            if success then
+                node.runtimeState = "running"
+                requestRuntimeStatus(node)
+            end
             print("[MGMT] " .. node.id .. " START -> " .. tostring(success) .. " " .. tostring(detail or ""))
         elseif command == "STOP" then
             if success then node.runtimeState = "stopped" end
             print("[MGMT] " .. node.id .. " STOP -> " .. tostring(success))
         elseif command == "RESTART" then
-            if success then node.runtimeState = "running" end
+            if success then
+                node.runtimeState = "running"
+                requestRuntimeStatus(node)
+            end
             print("[MGMT] " .. node.id .. " RESTART -> " .. tostring(success) .. " " .. tostring(detail or ""))
         end
     elseif envelope.kind == "MGMT_DEPLOY_RESULT" then
@@ -554,15 +561,14 @@ local function handleMgmtEnvelope(envelope)
             sendMgmt(node, "START")
         end
     elseif envelope.kind == "MGMT_ERROR" then
-        local operation = tostring(payload[1])
-        local detail = tostring(payload[2])
-        failDeployment(node, operation .. ": " .. detail)
+        failDeployment(node, tostring(payload[1]) .. ": " .. tostring(payload[2]))
     elseif envelope.kind == "BOOT_INFO" then
         local ok, info = pcall(serialization.unserialize, payload[1])
         if ok and type(info) == "table" then
             node.bootstrapVersion = info.bootstrapVersion or node.bootstrapVersion
             node.runtimeVersion = info.runtimeVersion or node.runtimeVersion
             node.runtimeState = info.runtimeState or node.runtimeState
+            if node.runtimeState == "running" then requestRuntimeStatus(node) end
         end
     end
 end
@@ -570,7 +576,6 @@ end
 local function handleRuntimeEnvelope(envelope)
     local node = getNode(envelope.source)
     if not node then return end
-
     local payload = envelope.payload
     local responseType = tostring(payload[1] or "")
     node.lastSeen = now()
@@ -603,12 +608,7 @@ local function handleEnvelope(port, envelope)
     if seenMessages[envelope.id] then return end
     seenMessages[envelope.id] = now()
 
-    if string.upper(envelope.destination) ~= CENTRAL_ID
-        and envelope.destination ~= "*"
-    then
-        return
-    end
-
+    if string.upper(envelope.destination) ~= CENTRAL_ID and envelope.destination ~= "*" then return end
     if port == MGMT_PORT then
         handleMgmtEnvelope(envelope)
     elseif port == OP_PORT and envelope.kind == "RUNTIME" then
@@ -617,10 +617,7 @@ local function handleEnvelope(port, envelope)
 end
 
 local function onModemMessage(_, _, _, port, _, marker, encoded)
-    if (port ~= MGMT_PORT and port ~= OP_PORT) or marker ~= "STRATCOM_NET" then
-        return
-    end
-
+    if (port ~= MGMT_PORT and port ~= OP_PORT) or marker ~= "STRATCOM_NET" then return end
     local ok, envelope = pcall(serialization.unserialize, encoded)
     if not ok then return end
     handleEnvelope(port, envelope)
@@ -641,6 +638,7 @@ local function printHeader()
     print("Op port:      " .. OP_PORT)
     print("Mesh:         protocol " .. PROTOCOL .. " / TTL " .. DEFAULT_TTL)
     print("Deploy:       ACK/retry")
+    print("Status poll:  " .. STATUS_INTERVAL .. "s")
     print("")
 end
 
@@ -648,30 +646,25 @@ local function printNodes()
     print("")
     print("NODE       ROLE       RUNTIME   STATE     MISSILE              LINK")
     print("---------------------------------------------------------------------")
-
     local found = false
     for id, node in pairs(nodes) do
         found = true
-        print(
-            string.format(
-                "%-10s %-10s %-9s %-9s %-20s %s",
-                id,
-                string.upper(tostring(node.role)),
-                clip(node.runtimeVersion, 9),
-                clip(node.runtimeState, 9),
-                clip(node.missileLabel, 20),
-                nodeOnline(node) and "ONLINE" or "OFFLINE"
-            )
-        )
+        print(string.format(
+            "%-10s %-10s %-9s %-9s %-20s %s",
+            id,
+            string.upper(tostring(node.role)),
+            clip(node.runtimeVersion, 9),
+            clip(node.runtimeState, 9),
+            clip(node.missileLabel, 20),
+            nodeOnline(node) and "ONLINE" or "OFFLINE"
+        ))
     end
-
     if not found then print("No mesh bootstrap nodes discovered.") end
     print("")
 end
 
 local function printStatus(node)
     if not node then print("Node not found."); return end
-
     print("")
     print("----------------------------------------")
     print("NODE STATUS")
@@ -689,18 +682,14 @@ local function printStatus(node)
     print("Armed:       " .. stateText(node.armed))
     print("Ready:       " .. stateText(node.ready))
     print("Tier:        " .. tostring(node.tier or "---"))
-
     local p = percent(node.energy, node.maxEnergy)
     if p then
         print("Power:       " .. node.energy .. "/" .. node.maxEnergy .. " (" .. p .. "%)")
     else
         print("Power:       ---")
     end
-
-    if node.lastSeen then
-        print("Last seen:   " .. string.format("%.1fs ago", now() - node.lastSeen))
-    end
-
+    if node.lastSeen then print("Last seen:   " .. string.format("%.1fs ago", now() - node.lastSeen)) end
+    if node.lastStatus then print("Status age:  " .. string.format("%.1fs", now() - node.lastStatus)) end
     print("----------------------------------------")
     print("")
 end
@@ -739,17 +728,13 @@ local function execute(line)
     local command = string.lower(args[1] or "")
 
     if command == "" then return
-    elseif command == "help" then
-        printHelp()
-    elseif command == "discover" then
-        discover()
-    elseif command == "nodes" then
-        printNodes()
+    elseif command == "help" then printHelp()
+    elseif command == "discover" then discover()
+    elseif command == "nodes" then printNodes()
     elseif command == "sync" then
         if syncRepository() then reconcileAll(true) end
     elseif command == "info" then
-        local node = getNode(args[2])
-        if not node then print("Usage: info <node>"); return end
+        local node = getNode(args[2]); if not node then print("Usage: info <node>"); return end
         sendMgmt(node, "INFO")
     elseif command == "deploy" then
         if string.lower(args[2] or "") == "all" then
@@ -757,75 +742,50 @@ local function execute(line)
                 if node.claimed and nodeOnline(node) then deployNode(node) end
             end
         else
-            local node = getNode(args[2])
-            if not node then print("Usage: deploy <node|all>"); return end
+            local node = getNode(args[2]); if not node then print("Usage: deploy <node|all>"); return end
             deployNode(node)
         end
     elseif command == "start" or command == "stop" or command == "restart" then
-        local node = getNode(args[2])
-        if not node then print("Usage: " .. command .. " <node>"); return end
+        local node = getNode(args[2]); if not node then print("Usage: " .. command .. " <node>"); return end
         sendMgmt(node, string.upper(command))
     elseif command == "status" then
-        local node = getNode(args[2])
-        if not node then print("Usage: status <node>"); return end
-        if not sendOperational(node, "STATUS") then
-            print("Runtime unavailable or node offline.")
-            return
-        end
+        local node = getNode(args[2]); if not node then print("Usage: status <node>"); return end
+        if not requestRuntimeStatus(node) then print("Runtime unavailable or node offline."); return end
         os.sleep(0.5)
         printStatus(node)
     elseif command == "ping" then
-        local node = getNode(args[2])
-        if not node then print("Usage: ping <node>"); return end
+        local node = getNode(args[2]); if not node then print("Usage: ping <node>"); return end
         sendOperational(node, "PING")
     elseif command == "arm" then
-        local node = getNode(args[2])
-        if not node then print("Usage: arm <node>"); return end
+        local node = getNode(args[2]); if not node then print("Usage: arm <node>"); return end
         sendOperational(node, "ARM")
     elseif command == "disarm" then
-        local node = getNode(args[2])
-        if not node then print("Usage: disarm <node>"); return end
+        local node = getNode(args[2]); if not node then print("Usage: disarm <node>"); return end
         sendOperational(node, "DISARM")
     elseif command == "launch" then
         local node = getNode(args[2])
         local x = tonumber(args[3])
         local z = tonumber(args[4])
-        if not node or not x or not z then
-            print("Usage: launch <node> <x> <z>")
-            return
-        end
-
-        if node.armed ~= true then
-            print("REJECTED: node is not armed.")
-            return
-        end
-
+        if not node or not x or not z then print("Usage: launch <node> <x> <z>"); return end
+        if node.armed ~= true then print("REJECTED: node is not armed."); return end
         print("")
         print("*** LAUNCH REQUEST ***")
         print("Node:    " .. node.id)
         print("Missile: " .. clip(node.missileLabel, 30))
         print("Target:  X=" .. x .. " Z=" .. z)
         io.write("Type LAUNCH to confirm: ")
-
-        if io.read() ~= "LAUNCH" then
-            print("Launch cancelled.")
-            return
-        end
-
+        if io.read() ~= "LAUNCH" then print("Launch cancelled."); return end
         sendOperational(node, "LAUNCH", x, z)
-    elseif command == "clear" then
-        printHeader()
-    elseif command == "quit" then
-        running = false
-    else
-        print("Unknown command. Type 'help'.")
-    end
+    elseif command == "clear" then printHeader()
+    elseif command == "quit" then running = false
+    else print("Unknown command. Type 'help'.") end
 end
 
 modem.open(MGMT_PORT)
 modem.open(OP_PORT)
 event.listen("modem_message", onModemMessage)
 local deploymentTimer = event.timer(1, checkDeploymentTimeouts, math.huge)
+local statusTimer = event.timer(STATUS_INTERVAL, pollRuntimeStatus, math.huge)
 
 printHeader()
 syncRepository()
@@ -837,12 +797,10 @@ while running do
     io.write("STRATCOM> ")
     local line = io.read()
     if line then execute(line) end
-
-    if now() - lastPrune >= PRUNE_INTERVAL then
-        pruneSeen()
-    end
+    if now() - lastPrune >= PRUNE_INTERVAL then pruneSeen() end
 end
 
+event.cancel(statusTimer)
 event.cancel(deploymentTimer)
 event.ignore("modem_message", onModemMessage)
 modem.close(OP_PORT)
