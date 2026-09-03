@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "1.1.2"
+local VERSION = "1.2.0"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/"
 local SCRIPT_PATH = "/home/stratcom/central.lua"
 local TMP_VERSION = "/tmp/stratcom-central-version.txt"
@@ -14,6 +14,7 @@ local TMP_SCRIPT = "/tmp/stratcom-central.lua"
 
 local PORT = 4510
 local OFFLINE_AFTER = 15
+local STATUS_REFRESH = 10
 
 local function trim(value)
     return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
@@ -34,15 +35,15 @@ local function isNewer(remote, localVersion)
     return rc > lc
 end
 
-local function cacheBust(url, token)
+local function cacheBust(url)
+    local token = tostring(math.floor(computer.uptime() * 1000)) .. "-" .. tostring(math.random(100000, 999999))
     local separator = url:find("?", 1, true) and "&" or "?"
-    token = token or tostring(math.floor(computer.uptime() * 1000))
-    return url .. separator .. "cb=" .. tostring(token)
+    return url .. separator .. "cb=" .. token
 end
 
 local function download(url, path)
     if filesystem.exists(path) then filesystem.remove(path) end
-    local command = string.format('wget -f "%s" "%s"', url, path)
+    local command = 'wget -f "' .. cacheBust(url) .. '" "' .. path .. '"'
     local ok = shell.execute(command)
     return ok and filesystem.exists(path)
 end
@@ -58,8 +59,7 @@ end
 local function checkForUpdates()
     print("[UPDATE] Checking GitHub...")
 
-    local versionUrl = cacheBust(BASE_URL .. "version.txt")
-    if not download(versionUrl, TMP_VERSION) then
+    if not download(BASE_URL .. "version.txt", TMP_VERSION) then
         print("[UPDATE] GitHub unavailable; continuing with v" .. VERSION)
         return false
     end
@@ -71,8 +71,7 @@ local function checkForUpdates()
     end
 
     print("[UPDATE] v" .. remoteVersion .. " available; downloading...")
-    local scriptUrl = cacheBust(BASE_URL .. "central.lua", remoteVersion)
-    if not download(scriptUrl, TMP_SCRIPT) then
+    if not download(BASE_URL .. "central.lua", TMP_SCRIPT) then
         print("[UPDATE] Download failed; continuing with v" .. VERSION)
         return false
     end
@@ -113,6 +112,13 @@ end
 local function percent(current, maximum)
     if not current or not maximum or maximum <= 0 then return nil end
     return math.floor((current / maximum) * 100)
+end
+
+local function clip(value, maxLength)
+    value = tostring(value or "")
+    if value == "" then return "---" end
+    if #value <= maxLength then return value end
+    return value:sub(1, maxLength - 1) .. "~"
 end
 
 local function nodeOnline(node)
@@ -173,6 +179,9 @@ local function applyStatus(node, status)
     node.oxidizer = status.oxidizer
     node.oxidizerMax = status.oxidizerMax
     node.oxidizerType = status.oxidizerType
+    node.missileName = status.missileName
+    node.missileLabel = status.missileLabel
+    node.missileCount = status.missileCount
     node.lastStatus = now()
 end
 
@@ -190,6 +199,10 @@ local function onModemMessage(_, _, remoteAddress, port, _, messageType, ...)
             node.tier = args[5]
             node.energy = args[6]
             node.maxEnergy = args[7]
+
+            if not node.lastStatus or now() - node.lastStatus >= STATUS_REFRESH then
+                requestStatus(node)
+            end
         end
     elseif messageType == "PONG" then
         local node = registerNode(remoteAddress, args[1], args[2])
@@ -261,8 +274,8 @@ end
 
 local function printNodes()
     print("")
-    print("NODE       ROLE       LINK      ARMED   READY   POWER")
-    print("-------------------------------------------------------")
+    print("NODE       ROLE       MISSILE              LINK      ARMED   READY   POWER")
+    print("--------------------------------------------------------------------------")
 
     local found = false
     for id, node in pairs(nodes) do
@@ -270,11 +283,13 @@ local function printNodes()
         local link = nodeOnline(node) and "ONLINE" or "OFFLINE"
         local p = percent(node.energy, node.maxEnergy)
         local power = p and (tostring(p) .. "%") or "---"
+        local missile = clip(node.missileLabel, 20)
 
         print(string.format(
-            "%-10s %-10s %-9s %-7s %-7s %s",
+            "%-10s %-10s %-20s %-9s %-7s %-7s %s",
             id,
             string.upper(tostring(node.role)),
+            missile,
             link,
             stateText(node.armed),
             stateText(node.ready),
@@ -297,6 +312,9 @@ local function printStatus(node)
     print("Role:       " .. string.upper(tostring(node.role)))
     print("Link:       " .. (nodeOnline(node) and "ONLINE" or "OFFLINE"))
     print("Address:    " .. tostring(node.address))
+    print("Missile:    " .. clip(node.missileLabel, 30))
+    print("Item:       " .. clip(node.missileName, 30))
+    print("Count:      " .. tostring(node.missileCount or 0))
     print("Armed:      " .. stateText(node.armed))
     print("Ready:      " .. stateText(node.ready))
     print("Tier:       " .. tostring(node.tier or "---"))
@@ -386,8 +404,9 @@ local function execute(line)
 
         print("")
         print("*** LAUNCH REQUEST ***")
-        print("Node:   " .. node.id)
-        print("Target: X=" .. x .. " Z=" .. z)
+        print("Node:    " .. node.id)
+        print("Missile: " .. clip(node.missileLabel, 30))
+        print("Target:  X=" .. x .. " Z=" .. z)
         if node.armed ~= true then print("REJECTED: node is not armed."); return end
 
         io.write("Type LAUNCH to confirm: ")
