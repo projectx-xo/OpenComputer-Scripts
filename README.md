@@ -5,7 +5,10 @@ OpenComputers scripts for an HBM Nuclear Tech command-and-control network.
 ## Layout
 
 - `node/node.lua` — reusable field-node daemon for launch-pad sites such as `ABM-A1`
+- `node/config.example.lua` — example persistent site configuration
+- `node/version.txt` — node release version used by the self-updater
 - `central/central.lua` — central STRATCOM command console
+- `central/version.txt` — central release version used by the self-updater
 
 ## Network protocol
 
@@ -21,24 +24,37 @@ Field nodes support:
 - `LAUNCH <x> <z>`
 - `SHUTDOWN_NODE`
 
-Nodes broadcast `HELLO` on startup and `HEARTBEAT` every 5 seconds.
+Nodes broadcast `HELLO` on startup and `HEARTBEAT` every 5 seconds. Central automatically requests a full `STATUS` packet when it discovers a new node.
 
-## Install on a field node
+## Field node install
+
+Create the persistent site config first:
 
 ```sh
 mkdir /home/stratcom
+edit /home/stratcom/config.lua
+```
+
+Example for the first ABM site:
+
+```lua
+return {
+    id = "ABM-A1",
+    role = "defense",
+    port = 4510,
+}
+```
+
+Then install the reusable node program:
+
+```sh
 wget -f https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/node.lua /home/stratcom/node.lua
 lua /home/stratcom/node.lua
 ```
 
-Edit the node identity near the top of `node.lua` for each site:
+The config file is never replaced by software updates, so the same `node.lua` can be deployed to every site.
 
-```lua
-local NODE_ID = "ABM-A1"
-local NODE_ROLE = "defense"
-```
-
-## Install on the central computer
+## Central install
 
 ```sh
 mkdir /home/stratcom
@@ -61,4 +77,18 @@ clear
 quit
 ```
 
-The current field-node implementation expects an HBM component named `ntm_launch_pad` and an OpenComputers modem.
+## Automatic GitHub updates
+
+Both `node.lua` and `central.lua` check their matching `version.txt` on GitHub at startup. If a newer semantic version is available, the program downloads the replacement script, keeps a `.bak` copy of the previous script, installs the update, and reboots the OpenComputers machine.
+
+Automatic GitHub checks require an OpenComputers **Internet Card** and internet access enabled in the OpenComputers configuration. If GitHub cannot be reached, the installed version continues normally.
+
+Updates are startup-only so a field node will not reboot itself unexpectedly while running.
+
+## HBM integration
+
+The current field-node implementation expects:
+
+- an HBM component exposed as `ntm_launch_pad`
+- an OpenComputers modem
+- an OpenComputers Internet Card only if that node should self-update directly from GitHub
