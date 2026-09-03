@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.4.1"
+local VERSION = "2.5.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -21,6 +21,7 @@ local REPOSITORY_DIR = "/home/stratcom/repository"
 local MANIFEST_PATH = REPOSITORY_DIR .. "/manifest.lua"
 local TMP_MANIFEST = "/tmp/stratcom-runtime-manifest.lua"
 local PAYLOAD_DB_PATH = "/home/stratcom/payloads.db"
+local LAUNCH_SITE_DB_PATH = "/home/stratcom/launchsites.db"
 
 local MGMT_PORT = 4510
 local OP_PORT = 4511
@@ -37,8 +38,14 @@ local ABM_MISSILE_ID = "hbm:item.missile_anti-ballistic"
 local DEFENSE_CONFIRM_SAMPLES = 3
 local DEFENSE_MAX_TCA = 120
 local DEFENSE_LEAD_SECONDS = 2
-local DEFENSE_POST_LAUNCH_TIMEOUT = 8
+local DEFENSE_POST_LAUNCH_TIMEOUT = 20
 local DEFENSE_REENGAGE_COOLDOWN = 10
+
+local LAUNCH_SITE_MAX_ACQUIRE_Y = 160
+local LAUNCH_SITE_MIN_CLIMB = 35
+local LAUNCH_SITE_MIN_DEPARTURE = 40
+local LAUNCH_SITE_CONFIRM_SAMPLES = 2
+local LAUNCH_SITE_MERGE_DISTANCE = 100
 
 local VALID_CLASSES = {
     nuclear = true,
@@ -166,6 +173,8 @@ local radarTracks = {}
 local engagementHistory = {}
 local activeEngagements = {}
 local pendingArm = nil
+local launchSites = {}
+local nextLaunchSiteId = 1
 local running = true
 local messageCounter = 0
 local seenMessages = {}
@@ -242,6 +251,115 @@ end
 local function payloadClass(itemId)
     local entry = payloadCatalog[tostring(itemId or "")]
     return entry and tostring(entry.class) or "unknown"
+end
+
+local function saveLaunchSites()
+    local ok, raw = pcall(serialization.serialize, {
+        sites = launchSites,
+        nextId = nextLaunchSiteId,
+    })
+    if not ok then return false end
+    local file = io.open(LAUNCH_SITE_DB_PATH, "w")
+    if not file then return false end
+    file:write(raw)
+    file:close()
+    return true
+end
+
+local function loadLaunchSites()
+    launchSites = {}
+    nextLaunchSiteId = 1
+    local raw = readAll(LAUNCH_SITE_DB_PATH)
+    if not raw then return end
+    local ok, data = pcall(serialization.unserialize, raw)
+    if not ok or type(data) ~= "table" then return end
+    if type(data.sites) == "table" then launchSites = data.sites end
+    nextLaunchSiteId = tonumber(data.nextId) or 1
+end
+
+local function launchSiteConfidence(launches)
+    launches = tonumber(launches) or 0
+    if launches >= 3 then return "VERY_HIGH" end
+    if launches >= 2 then return "HIGH" end
+    return "MEDIUM"
+end
+
+local function horizontalDistance(x1, z1, x2, z2)
+    local dx = (tonumber(x2) or 0) - (tonumber(x1) or 0)
+    local dz = (tonumber(z2) or 0) - (tonumber(z1) or 0)
+    return math.sqrt(dx * dx + dz * dz)
+end
+
+local function recordLaunchSite(track)
+    if not track or track.firstX == nil or track.firstZ == nil then return nil end
+
+    local best = nil
+    local bestDistance = nil
+    for _, site in pairs(launchSites) do
+        local distance = horizontalDistance(site.x, site.z, track.firstX, track.firstZ)
+        if distance <= LAUNCH_SITE_MERGE_DISTANCE
+            and (not bestDistance or distance < bestDistance)
+        then
+            best = site
+            bestDistance = distance
+        end
+    end
+
+    if not best then
+        best = {
+            id = nextLaunchSiteId,
+            x = track.firstX,
+            y = track.firstY,
+            z = track.firstZ,
+            launches = 0,
+            firstDetected = now(),
+        }
+        launchSites[best.id] = best
+        nextLaunchSiteId = nextLaunchSiteId + 1
+    end
+
+    local oldCount = tonumber(best.launches) or 0
+    local newCount = oldCount + 1
+    if oldCount > 0 then
+        best.x = ((best.x or 0) * oldCount + track.firstX) / newCount
+        best.z = ((best.z or 0) * oldCount + track.firstZ) / newCount
+        best.y = ((best.y or 0) * oldCount + (track.firstY or 0)) / newCount
+    end
+    best.launches = newCount
+    best.lastDetected = now()
+    best.station = track.station
+    best.lastTrackId = track.id
+    best.lastTypeId = track.typeId
+    best.lastTypeName = track.typeName
+    best.confidence = launchSiteConfidence(best.launches)
+    saveLaunchSites()
+
+    print("[RADAR] POSSIBLE LAUNCH SITE #" .. tostring(best.id)
+        .. " @ X=" .. tostring(math.floor(best.x + 0.5))
+        .. " Z=" .. tostring(math.floor(best.z + 0.5))
+        .. " confidence=" .. tostring(best.confidence)
+        .. " launches=" .. tostring(best.launches))
+    return best
+end
+
+local function evaluateLaunchSiteCandidate(track)
+    if not track or track.launchSitePromoted then return end
+    local typeId = tonumber(track.typeId)
+    if typeId == nil or typeId < 0 or typeId > 9 then return end
+    if track.firstY == nil or track.firstY > LAUNCH_SITE_MAX_ACQUIRE_Y then return end
+
+    local climb = (tonumber(track.y) or 0) - (tonumber(track.firstY) or 0)
+    local departure = horizontalDistance(track.firstX, track.firstZ, track.x, track.z)
+    if climb >= LAUNCH_SITE_MIN_CLIMB
+        and departure >= LAUNCH_SITE_MIN_DEPARTURE
+        and (tonumber(track.vy) or 0) > 0
+    then
+        track.launchSiteSamples = (track.launchSiteSamples or 0) + 1
+        if track.launchSiteSamples >= LAUNCH_SITE_CONFIRM_SAMPLES then
+            track.launchSitePromoted = true
+            recordLaunchSite(track)
+        end
+    end
 end
 
 local function nextMessageId()
@@ -545,6 +663,11 @@ local function applyRadarTrack(node, track)
         lastUpdate = now(),
         threatSamples = previous and previous.threatSamples or 0,
         lastEngaged = previous and previous.lastEngaged or nil,
+        firstX = previous and previous.firstX or tonumber(track.x),
+        firstY = previous and previous.firstY or tonumber(track.y),
+        firstZ = previous and previous.firstZ or tonumber(track.z),
+        launchSiteSamples = previous and previous.launchSiteSamples or 0,
+        launchSitePromoted = previous and previous.launchSitePromoted or false,
     }
     return radarTracks[key]
 end
@@ -769,7 +892,7 @@ local function defenseTick()
         then
             local track = radarTracks[key]
             if track then
-                finishEngagement(engagement, "MISS", "TRACK_STILL_ACTIVE")
+                finishEngagement(engagement, "MISS", "HOSTILE_TRACK_STILL_ACTIVE_AFTER_OBSERVATION_WINDOW")
                 track.lastEngaged = now()
             end
         elseif engagement.state == "ARMING" and now() - engagement.createdAt > 5 then
@@ -788,7 +911,7 @@ local function handleTrackLostForDefense(key)
     if not engagement then return end
 
     if engagement.state == "FIRED" or engagement.state == "LAUNCHING" then
-        finishEngagement(engagement, "TRACK_LOST", "POSSIBLE_INTERCEPT")
+        finishEngagement(engagement, "INTERCEPT_CONFIRMED", "HOSTILE_TRACK_LOST_AFTER_ABM_ENGAGEMENT")
     elseif engagement.state == "ARMING" then
         finishEngagement(engagement, "ABORTED", "TRACK_LOST_BEFORE_LAUNCH")
     end
@@ -904,7 +1027,10 @@ local function handleRadarTrackEvent(node, encoded)
                 .. " ACQUIRED " .. tostring(saved.typeName)
                 .. " @ " .. tostring(saved.x) .. "," .. tostring(saved.y) .. "," .. tostring(saved.z))
         end
-        if saved then evaluateTrackForDefense(saved) end
+        if saved then
+            evaluateLaunchSiteCandidate(saved)
+            evaluateTrackForDefense(saved)
+        end
     end
 
     local count = 0
@@ -1280,6 +1406,55 @@ local function printDefenseStatus()
     print("")
 end
 
+local function printLaunchSites()
+    print("")
+    print("POSSIBLE LAUNCH SITES")
+    print("================================================================================")
+    print("ID   POSITION             LAUNCHES CONFIDENCE LAST SOURCE")
+    print("--------------------------------------------------------------------------------")
+    local list = {}
+    for _, site in pairs(launchSites) do table.insert(list, site) end
+    table.sort(list, function(a, b) return tonumber(a.id) < tonumber(b.id) end)
+    if #list == 0 then
+        print("No possible launch sites recorded.")
+    else
+        for _, site in ipairs(list) do
+            local pos = string.format("%d,%d,%d", site.x or 0, site.y or 0, site.z or 0)
+            print(string.format(
+                "#%-3s %-20s %-8s %-10s %s:%s",
+                tostring(site.id),
+                pos,
+                tostring(site.launches or 0),
+                tostring(site.confidence or launchSiteConfidence(site.launches)),
+                tostring(site.station or "---"),
+                tostring(site.lastTrackId or "---")
+            ))
+        end
+    end
+    print("")
+end
+
+local function printLaunchSite(id)
+    local site = launchSites[tonumber(id)]
+    if not site then print("Launch site not found."); return end
+    print("")
+    print("POSSIBLE LAUNCH SITE #" .. tostring(site.id))
+    print("============================================================")
+    print("Position:     X=" .. tostring(math.floor((site.x or 0) + 0.5))
+        .. " Y=" .. tostring(math.floor((site.y or 0) + 0.5))
+        .. " Z=" .. tostring(math.floor((site.z or 0) + 0.5)))
+    print("Launches:     " .. tostring(site.launches or 0))
+    print("Confidence:   " .. tostring(site.confidence or launchSiteConfidence(site.launches)))
+    print("Last station: " .. tostring(site.station or "---"))
+    print("Last track:   " .. tostring(site.lastTrackId or "---"))
+    print("Last type:    " .. tostring(site.lastTypeName or "---"))
+    print("Strike hint:  strike SILO-S2 <class> <count> "
+        .. tostring(math.floor((site.x or 0) + 0.5)) .. " "
+        .. tostring(math.floor((site.z or 0) + 0.5)))
+    print("============================================================")
+    print("")
+end
+
 local function printEngagements()
     print("")
     print("ENGAGEMENT HISTORY")
@@ -1373,6 +1548,8 @@ local function printHelp()
     print("  radars")
     print("  radar <node>")
     print("  tracks [node]")
+    print("  launchsites")
+    print("  launchsite <id>")
     print("")
     print("Defense:")
     print("  defense protect <x> <z> <radius>")
@@ -1414,6 +1591,11 @@ local function execute(line)
     elseif command == "tracks" then
         if args[2] and not getNode(args[2]) then print("Node not found."); return end
         printTracks(args[2])
+    elseif command == "launchsites" then
+        printLaunchSites()
+    elseif command == "launchsite" then
+        if not tonumber(args[2]) then print("Usage: launchsite <id>"); return end
+        printLaunchSite(args[2])
     elseif command == "defense" then
         local sub = string.lower(args[2] or "")
         if sub == "protect" then
@@ -1558,6 +1740,7 @@ local statusTimer = event.timer(STATUS_INTERVAL, pollRuntimeStatus, math.huge)
 local defenseTimer = event.timer(1, defenseTick, math.huge)
 
 loadPayloadCatalog()
+loadLaunchSites()
 printHeader()
 syncRepository()
 discover()
