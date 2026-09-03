@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.1.0"
+local VERSION = "2.1.1"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -26,6 +26,8 @@ local OP_PORT = 4511
 local OFFLINE_AFTER = 15
 local RECONCILE_INTERVAL = 10
 local CHUNK_SIZE = 2048
+local DEPLOY_TIMEOUT = 3
+local DEPLOY_MAX_RETRIES = 4
 
 local function trim(value)
     return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
@@ -325,6 +327,54 @@ local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeS
     return node
 end
 
+local function deploymentChunk(deployment, index)
+    local startIndex = ((index - 1) * CHUNK_SIZE) + 1
+    return deployment.data:sub(startIndex, startIndex + CHUNK_SIZE - 1)
+end
+
+local function failDeployment(node, reason)
+    if not node or not node.deploying then return end
+    print("[DEPLOY] " .. node.id .. " FAILED: " .. tostring(reason))
+    node.deploying = false
+    node.deployment = nil
+    sendMgmt(node, "DEPLOY_ABORT")
+    sendMgmt(node, "START")
+end
+
+local function sendDeploymentStep(node, retrying)
+    local deployment = node and node.deployment
+    if not deployment then return false end
+
+    if retrying then
+        deployment.retries = deployment.retries + 1
+        if deployment.retries > DEPLOY_MAX_RETRIES then
+            failDeployment(node, "TIMEOUT_" .. tostring(deployment.phase))
+            return false
+        end
+        print(
+            "[DEPLOY] " .. node.id .. " retry " .. deployment.retries
+                .. "/" .. DEPLOY_MAX_RETRIES .. " (" .. deployment.phase .. ")"
+        )
+    else
+        deployment.retries = 0
+    end
+
+    if deployment.phase == "begin" then
+        sendMgmt(node, "DEPLOY_BEGIN", deployment.version, deployment.totalChunks)
+    elseif deployment.phase == "chunk" then
+        local index = deployment.nextChunk
+        sendMgmt(node, "DEPLOY_CHUNK", index, deploymentChunk(deployment, index))
+    elseif deployment.phase == "commit" then
+        sendMgmt(node, "DEPLOY_COMMIT", deployment.version)
+    else
+        failDeployment(node, "INVALID_PHASE")
+        return false
+    end
+
+    deployment.lastSent = now()
+    return true
+end
+
 local function deployNode(node)
     if not node or node.deploying or not node.claimed then return false end
 
@@ -342,22 +392,34 @@ local function deployNode(node)
 
     local totalChunks = math.max(1, math.ceil(#data / CHUNK_SIZE))
     node.deploying = true
+    node.deployment = {
+        version = desired.version,
+        data = data,
+        totalChunks = totalChunks,
+        nextChunk = 1,
+        phase = "begin",
+        retries = 0,
+        lastSent = 0,
+    }
 
     print(
         "[DEPLOY] " .. node.id .. " <- " .. desired.version
-            .. " (" .. totalChunks .. " chunks)"
+            .. " (" .. totalChunks .. " chunks, ACK mode)"
     )
 
-    sendMgmt(node, "DEPLOY_BEGIN", desired.version, totalChunks)
+    return sendDeploymentStep(node, false)
+end
 
-    for index = 1, totalChunks do
-        local startIndex = ((index - 1) * CHUNK_SIZE) + 1
-        local chunk = data:sub(startIndex, startIndex + CHUNK_SIZE - 1)
-        sendMgmt(node, "DEPLOY_CHUNK", index, chunk)
+local function checkDeploymentTimeouts()
+    for _, node in pairs(nodes) do
+        local deployment = node.deployment
+        if node.deploying and deployment
+            and deployment.lastSent > 0
+            and now() - deployment.lastSent >= DEPLOY_TIMEOUT
+        then
+            sendDeploymentStep(node, true)
+        end
     end
-
-    sendMgmt(node, "DEPLOY_COMMIT", desired.version)
-    return true
 end
 
 local function reconcileNode(node, force)
@@ -438,6 +500,33 @@ local function handleMgmtEnvelope(envelope)
             node.claimed = true
             print("[MGMT] Claimed " .. node.id)
             reconcileNode(node, true)
+        elseif command == "DEPLOY_BEGIN" and success then
+            local deployment = node.deployment
+            if node.deploying and deployment and deployment.phase == "begin" then
+                print("[DEPLOY] " .. node.id .. " begin ACK")
+                deployment.phase = "chunk"
+                deployment.nextChunk = 1
+                sendDeploymentStep(node, false)
+            end
+        elseif command == "DEPLOY_CHUNK" and success then
+            local deployment = node.deployment
+            local acknowledged = tonumber(detail)
+            if node.deploying and deployment
+                and deployment.phase == "chunk"
+                and acknowledged == deployment.nextChunk
+            then
+                print(
+                    "[DEPLOY] " .. node.id .. " chunk "
+                        .. acknowledged .. "/" .. deployment.totalChunks .. " ACK"
+                )
+
+                if acknowledged >= deployment.totalChunks then
+                    deployment.phase = "commit"
+                else
+                    deployment.nextChunk = acknowledged + 1
+                end
+                sendDeploymentStep(node, false)
+            end
         elseif command == "START" then
             if success then node.runtimeState = "running" end
             print("[MGMT] " .. node.id .. " START -> " .. tostring(success) .. " " .. tostring(detail or ""))
@@ -453,6 +542,7 @@ local function handleMgmtEnvelope(envelope)
         local version = tostring(payload[2] or "unknown")
         local detail = payload[3]
         node.deploying = false
+        node.deployment = nil
 
         if success then
             node.runtimeVersion = version
@@ -461,13 +551,12 @@ local function handleMgmtEnvelope(envelope)
             sendMgmt(node, "START")
         else
             print("[DEPLOY] " .. node.id .. " FAILED: " .. tostring(detail))
+            sendMgmt(node, "START")
         end
     elseif envelope.kind == "MGMT_ERROR" then
-        node.deploying = false
-        print(
-            "[MGMT ERROR] " .. node.id .. " "
-                .. tostring(payload[1]) .. ": " .. tostring(payload[2])
-        )
+        local operation = tostring(payload[1])
+        local detail = tostring(payload[2])
+        failDeployment(node, operation .. ": " .. detail)
     elseif envelope.kind == "BOOT_INFO" then
         local ok, info = pcall(serialization.unserialize, payload[1])
         if ok and type(info) == "table" then
@@ -551,6 +640,7 @@ local function printHeader()
     print("Mgmt port:    " .. MGMT_PORT)
     print("Op port:      " .. OP_PORT)
     print("Mesh:         protocol " .. PROTOCOL .. " / TTL " .. DEFAULT_TTL)
+    print("Deploy:       ACK/retry")
     print("")
 end
 
@@ -735,6 +825,7 @@ end
 modem.open(MGMT_PORT)
 modem.open(OP_PORT)
 event.listen("modem_message", onModemMessage)
+local deploymentTimer = event.timer(1, checkDeploymentTimeouts, math.huge)
 
 printHeader()
 syncRepository()
@@ -752,6 +843,7 @@ while running do
     end
 end
 
+event.cancel(deploymentTimer)
 event.ignore("modem_message", onModemMessage)
 modem.close(OP_PORT)
 modem.close(MGMT_PORT)
