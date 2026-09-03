@@ -125,6 +125,18 @@ local function parseSelector(value, allowAll)
     return index
 end
 
+local function launchOne(index, targetX, targetZ, requireArmed)
+    local entry = launchers[index]
+    if not entry then return false, "INVALID_LAUNCHER" end
+    if requireArmed and not armed[index] then return false, "DISARMED" end
+    if not entry.pad.canLaunch() then return false, "NOT_READY" end
+
+    local ok, success = pcall(entry.pad.launch, targetX, targetZ)
+    if not ok then return false, "LAUNCH_EXCEPTION: " .. tostring(success) end
+    if success then armed[index] = false end
+    return success == true, success == true and "OK" or "LAUNCH_FAILED"
+end
+
 local runtime = {}
 
 function runtime.start(ctx)
@@ -155,6 +167,12 @@ function runtime.start(ctx)
             "Strike runtime started for " .. tostring(context.id)
                 .. " with " .. tostring(#launchers) .. " launcher(s)"
         )
+        if #inventoryAddresses ~= #padAddresses then
+            context.log(
+                "WARNING: launcher/inventory count mismatch: "
+                    .. tostring(#padAddresses) .. "/" .. tostring(#inventoryAddresses)
+            )
+        end
     end
 end
 
@@ -170,7 +188,7 @@ function runtime.status()
     return getStatus()
 end
 
-function runtime.onMessage(remoteAddress, command, arg1, arg2, arg3)
+function runtime.onMessage(remoteAddress, command, arg1, arg2)
     if command == "PING" then
         context.send(remoteAddress, "PONG", context.role)
         return
@@ -195,45 +213,65 @@ function runtime.onMessage(remoteAddress, command, arg1, arg2, arg3)
             armed[selector] = value
         end
 
-        context.send(remoteAddress, "ACK", command, true, selector)
+        context.send(remoteAddress, "ACK", command, true, tostring(selector))
         return
     end
 
-    if command == "LAUNCH" then
+    if command == "LAUNCH_SILO" then
         local launcherIndex = parseSelector(arg1, false)
-        local targetX = tonumber(arg2)
-        local targetZ = tonumber(arg3)
-
+        local okCoords, coords = pcall(serialization.unserialize, tostring(arg2 or ""))
         if launcherIndex == nil then
             context.send(remoteAddress, "ERROR", "INVALID_LAUNCHER", tostring(arg1))
             return
         end
+        if not okCoords or type(coords) ~= "table" then
+            context.send(remoteAddress, "ERROR", "INVALID_COORDINATES")
+            return
+        end
+
+        local targetX = tonumber(coords.x)
+        local targetZ = tonumber(coords.z)
         if not targetX or not targetZ then
             context.send(remoteAddress, "ERROR", "INVALID_COORDINATES")
             return
         end
-        if not armed[launcherIndex] then
-            context.send(remoteAddress, "ERROR", "DISARMED", launcherIndex)
+
+        local success, detail = launchOne(launcherIndex, targetX, targetZ, true)
+        context.send(remoteAddress, "LAUNCH_RESULT", success, launcherIndex, targetX, targetZ, detail)
+        return
+    end
+
+    if command == "STRIKE" then
+        local okPlan, plan = pcall(serialization.unserialize, tostring(arg1 or ""))
+        local okCoords, coords = pcall(serialization.unserialize, tostring(arg2 or ""))
+        if not okPlan or type(plan) ~= "table" or not okCoords or type(coords) ~= "table" then
+            context.send(remoteAddress, "ERROR", "INVALID_STRIKE_PLAN")
             return
         end
 
-        local pad = launchers[launcherIndex].pad
-        if not pad.canLaunch() then
-            context.send(remoteAddress, "ERROR", "NOT_READY", launcherIndex)
+        local targetX = tonumber(coords.x)
+        local targetZ = tonumber(coords.z)
+        if not targetX or not targetZ then
+            context.send(remoteAddress, "ERROR", "INVALID_COORDINATES")
             return
         end
 
-        local success = pad.launch(targetX, targetZ)
-        if success then armed[launcherIndex] = false end
+        local results = {}
+        local used = {}
+        for _, rawIndex in ipairs(plan) do
+            local index = parseSelector(rawIndex, false)
+            if index and not used[index] then
+                used[index] = true
+                local success, detail = launchOne(index, targetX, targetZ, false)
+                table.insert(results, {
+                    launcher = index,
+                    success = success,
+                    detail = detail,
+                })
+            end
+        end
 
-        context.send(
-            remoteAddress,
-            "LAUNCH_RESULT",
-            success,
-            targetX,
-            targetZ,
-            launcherIndex
-        )
+        context.send(remoteAddress, "STRIKE_RESULT", serialization.serialize(results), targetX, targetZ)
         return
     end
 
