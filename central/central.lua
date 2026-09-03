@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "1.2.0"
+local VERSION = "1.2.1"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/"
 local SCRIPT_PATH = "/home/stratcom/central.lua"
 local TMP_VERSION = "/tmp/stratcom-central-version.txt"
@@ -36,7 +36,9 @@ local function isNewer(remote, localVersion)
 end
 
 local function cacheBust(url)
-    local token = tostring(math.floor(computer.uptime() * 1000)) .. "-" .. tostring(math.random(100000, 999999))
+    local token = tostring(math.floor(computer.uptime() * 1000))
+        .. "-"
+        .. tostring(math.random(100000, 999999))
     local separator = url:find("?", 1, true) and "&" or "?"
     return url .. separator .. "cb=" .. token
 end
@@ -224,7 +226,14 @@ local function onModemMessage(_, _, remoteAddress, port, _, messageType, ...)
         end
     elseif messageType == "ACK" then
         print("")
-        print("[ACK] " .. tostring(args[1]) .. " " .. tostring(args[2]) .. " -> " .. tostring(args[3]))
+        print(
+            "[ACK] "
+                .. tostring(args[1])
+                .. " "
+                .. tostring(args[2])
+                .. " -> "
+                .. tostring(args[3])
+        )
         io.write("STRATCOM> ")
     elseif messageType == "ERROR" then
         print("")
@@ -233,7 +242,14 @@ local function onModemMessage(_, _, remoteAddress, port, _, messageType, ...)
     elseif messageType == "LAUNCH_RESULT" then
         print("")
         if args[2] then
-            print("[LAUNCH] " .. tostring(args[1]) .. " launched toward X=" .. tostring(args[3]) .. " Z=" .. tostring(args[4]))
+            print(
+                "[LAUNCH] "
+                    .. tostring(args[1])
+                    .. " launched toward X="
+                    .. tostring(args[3])
+                    .. " Z="
+                    .. tostring(args[4])
+            )
         else
             print("[LAUNCH] " .. tostring(args[1]) .. " launch FAILED")
         end
@@ -257,7 +273,7 @@ end
 
 local function discover()
     print("Broadcasting discovery request...")
-    modem.broadcast(PORT, "IDENTIFY")
+    modem.broadcast(PORT, "DISCOVER")
     modem.broadcast(PORT, "PING")
 end
 
@@ -327,13 +343,27 @@ local function printStatus(node)
     end
 
     if node.fuel ~= nil then
-        print("Fuel:       " .. tostring(node.fuel) .. "/" .. tostring(node.fuelMax) .. " " .. tostring(node.fuelType))
+        print(
+            "Fuel:       "
+                .. tostring(node.fuel)
+                .. "/"
+                .. tostring(node.fuelMax)
+                .. " "
+                .. tostring(node.fuelType)
+        )
     else
         print("Fuel:       ---")
     end
 
     if node.oxidizer ~= nil then
-        print("Oxidizer:   " .. tostring(node.oxidizer) .. "/" .. tostring(node.oxidizerMax) .. " " .. tostring(node.oxidizerType))
+        print(
+            "Oxidizer:   "
+                .. tostring(node.oxidizer)
+                .. "/"
+                .. tostring(node.oxidizerMax)
+                .. " "
+                .. tostring(node.oxidizerType)
+        )
     else
         print("Oxidizer:   ---")
     end
@@ -400,21 +430,36 @@ local function execute(line)
         local node = getNode(args[2])
         local x = tonumber(args[3])
         local z = tonumber(args[4])
-        if not node or not x or not z then print("Usage: launch <node> <x> <z>"); return end
+        if not node or not x or not z then
+            print("Usage: launch <node> <x> <z>")
+            return
+        end
 
         print("")
         print("*** LAUNCH REQUEST ***")
         print("Node:    " .. node.id)
         print("Missile: " .. clip(node.missileLabel, 30))
         print("Target:  X=" .. x .. " Z=" .. z)
-        if node.armed ~= true then print("REJECTED: node is not armed."); return end
+
+        if node.armed ~= true then
+            print("REJECTED: node is not armed.")
+            return
+        end
 
         io.write("Type LAUNCH to confirm: ")
-        if io.read() ~= "LAUNCH" then print("Launch cancelled."); return end
+        if io.read() ~= "LAUNCH" then
+            print("Launch cancelled.")
+            return
+        end
+
         sendNode(node, "LAUNCH", x, z)
-    elseif command == "clear" then printHeader()
-    elseif command == "quit" then running = false
-    else print("Unknown command. Type 'help'.") end
+    elseif command == "clear" then
+        printHeader()
+    elseif command == "quit" then
+        running = false
+    else
+        print("Unknown command. Type 'help'.")
+    end
 end
 
 printHeader()
