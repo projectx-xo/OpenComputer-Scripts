@@ -3,8 +3,9 @@ local event = require("event")
 local computer = require("computer")
 local shell = require("shell")
 local filesystem = require("filesystem")
+local serialization = require("serialization")
 
-local VERSION = "1.1.0"
+local VERSION = "1.1.1"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/"
 local SCRIPT_PATH = "/home/stratcom/node.lua"
 local CONFIG_PATH = "/home/stratcom/config.lua"
@@ -32,7 +33,7 @@ end
 
 local function download(url, path)
     if filesystem.exists(path) then filesystem.remove(path) end
-    local ok = shell.execute("wget -fq " .. url .. " " .. path)
+    local ok = shell.execute("wget -f " .. url .. " " .. path)
     return ok and filesystem.exists(path)
 end
 
@@ -53,14 +54,12 @@ local function checkForUpdates()
     end
 
     local remoteVersion = trim(readFirstLine(TMP_VERSION))
-
     if not isNewer(remoteVersion, VERSION) then
         print("[UPDATE] Current version: " .. VERSION)
         return false
     end
 
     print("[UPDATE] v" .. remoteVersion .. " available; downloading...")
-
     if not download(BASE_URL .. "node.lua", TMP_SCRIPT) then
         print("[UPDATE] Download failed; continuing with v" .. VERSION)
         return false
@@ -123,6 +122,7 @@ local function getStatus()
     if tier == nil then tier = -1 end
 
     return {
+        armed = armed,
         ready = launchPad.canLaunch(),
         tier = tier,
         energy = energy or 0,
@@ -133,7 +133,6 @@ local function getStatus()
         oxidizer = oxidizer or 0,
         oxidizerMax = oxidizerMax or 0,
         oxidizerType = tostring(oxidizerType),
-        armed = armed,
     }
 end
 
@@ -146,16 +145,22 @@ local function broadcast(...)
 end
 
 local function sendStatus(remoteAddress)
-    local status = getStatus()
-    send(remoteAddress, "STATUS", NODE_ID, NODE_ROLE, status.armed, status.ready,
-        status.tier, status.energy, status.maxEnergy, status.fuel, status.fuelMax,
-        status.fuelType, status.oxidizer, status.oxidizerMax, status.oxidizerType)
+    local payload = serialization.serialize(getStatus())
+    send(remoteAddress, "STATUS", NODE_ID, NODE_ROLE, payload)
 end
 
 local function sendHeartbeat()
     local status = getStatus()
-    broadcast("HEARTBEAT", NODE_ID, NODE_ROLE, status.armed, status.ready,
-        status.tier, status.energy, status.maxEnergy)
+    broadcast(
+        "HEARTBEAT",
+        NODE_ID,
+        NODE_ROLE,
+        status.armed,
+        status.ready,
+        status.tier,
+        status.energy,
+        status.maxEnergy
+    )
     lastHeartbeat = computer.uptime()
 end
 
@@ -230,10 +235,13 @@ broadcast("HELLO", NODE_ID, NODE_ROLE)
 sendHeartbeat()
 
 while running do
-    local eventName, _, remoteAddress, port, _, command, arg1, arg2 = event.pull(1, "modem_message")
+    local eventName, _, remoteAddress, port, _, command, arg1, arg2 =
+        event.pull(1, "modem_message")
+
     if eventName == "modem_message" and port == PORT then
         handleCommand(remoteAddress, command, arg1, arg2)
     end
+
     if computer.uptime() - lastHeartbeat >= HEARTBEAT_INTERVAL then
         sendHeartbeat()
     end
