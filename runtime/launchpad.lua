@@ -8,6 +8,8 @@ local armed = false
 
 local MISSILE_PREFIX = "hbm:item.missile_"
 local BATTERY_PREFIX = "hbm:item.battery_"
+local ABM_RAW_ID = "hbm:item.missile_anti_ballistic"
+local ABM_CENTRAL_ID = "hbm:item.missile_anti-ballistic"
 
 local function findComponent(componentType)
     local address = component.list(componentType)()
@@ -59,8 +61,13 @@ local function getStatus()
     local energy, maxEnergy = launchPad.getEnergyInfo()
     local fuel, fuelMax, fuelType, oxidizer, oxidizerMax, oxidizerType =
         launchPad.getFluid()
-    local missileName, missileLabel, missileCount, inventorySide = getMissileInfo()
+    local rawMissileName, missileLabel, missileCount, inventorySide = getMissileInfo()
+    local missileName = rawMissileName
     local tier = launchPad.getTier()
+
+    if context and context.role == "defense" and rawMissileName == ABM_RAW_ID then
+        missileName = ABM_CENTRAL_ID
+    end
 
     if tier == nil then tier = -1 end
 
@@ -77,6 +84,7 @@ local function getStatus()
         oxidizerMax = oxidizerMax or 0,
         oxidizerType = tostring(oxidizerType),
         missileName = missileName,
+        rawMissileName = rawMissileName,
         missileLabel = missileLabel,
         missileCount = missileCount,
         inventorySide = inventorySide,
