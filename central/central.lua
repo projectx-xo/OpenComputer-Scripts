@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.2.0"
+local VERSION = "2.3.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -30,6 +30,7 @@ local STATUS_INTERVAL = 5
 local CHUNK_SIZE = 2048
 local DEPLOY_TIMEOUT = 3
 local DEPLOY_MAX_RETRIES = 4
+local RADAR_TRACK_STALE_AFTER = 10
 
 local VALID_CLASSES = {
     nuclear = true,
@@ -37,6 +38,23 @@ local VALID_CLASSES = {
     bunker = true,
     special = true,
     unknown = true,
+}
+
+local RADAR_TYPE_NAMES = {
+    [0] = "TIER0",
+    [1] = "TIER1",
+    [2] = "TIER2",
+    [3] = "TIER3",
+    [4] = "TIER4",
+    [5] = "TIER10",
+    [6] = "TIER10_15",
+    [7] = "TIER15",
+    [8] = "TIER15_20",
+    [9] = "TIER20",
+    [10] = "ANTI_BALLISTIC",
+    [11] = "PLAYER",
+    [12] = "ARTILLERY",
+    [13] = "SPECIAL",
 }
 
 local function trim(value)
@@ -136,6 +154,7 @@ local modem = component.proxy(modemAddress)
 local nodes = {}
 local desiredRuntimes = {}
 local payloadCatalog = {}
+local radarTracks = {}
 local running = true
 local messageCounter = 0
 local seenMessages = {}
@@ -160,6 +179,10 @@ local function clip(value, maxLength)
     if value == "" or value == "nil" then return "---" end
     if #value <= maxLength then return value end
     return value:sub(1, maxLength - 1) .. "~"
+end
+
+local function radarTypeName(typeId)
+    return RADAR_TYPE_NAMES[tonumber(typeId)] or ("UNKNOWN_" .. tostring(typeId))
 end
 
 local function nodeOnline(node)
@@ -473,8 +496,68 @@ local function reconcileAll(force)
     for _, node in pairs(nodes) do reconcileNode(node, force) end
 end
 
+local function radarTrackKey(nodeId, trackId)
+    return string.upper(tostring(nodeId)) .. ":" .. tostring(trackId)
+end
+
+local function applyRadarTrack(node, track)
+    if not node or type(track) ~= "table" or track.id == nil then return nil end
+    local key = radarTrackKey(node.id, track.id)
+    radarTracks[key] = {
+        key = key,
+        station = node.id,
+        id = track.id,
+        typeId = tonumber(track.typeId),
+        typeName = track.typeName or radarTypeName(track.typeId),
+        isPlayer = track.isPlayer == true,
+        name = track.name,
+        x = tonumber(track.x),
+        y = tonumber(track.y),
+        z = tonumber(track.z),
+        vx = tonumber(track.vx) or 0,
+        vy = tonumber(track.vy) or 0,
+        vz = tonumber(track.vz) or 0,
+        horizontalSpeed = tonumber(track.horizontalSpeed) or 0,
+        totalSpeed = tonumber(track.totalSpeed) or 0,
+        heading = tonumber(track.heading) or 0,
+        headingName = track.headingName,
+        radars = track.radars or {},
+        age = tonumber(track.age) or 0,
+        lastUpdate = now(),
+    }
+    return radarTracks[key]
+end
+
+local function applyRadarStatus(node, status)
+    node.radarStation = true
+    node.radarCount = tonumber(status.radarCount) or 0
+    node.activeTrackCount = tonumber(status.activeTrackCount) or 0
+    node.radars = status.radars or {}
+
+    local seen = {}
+    if type(status.tracks) == "table" then
+        for _, track in pairs(status.tracks) do
+            local saved = applyRadarTrack(node, track)
+            if saved then seen[saved.key] = true end
+        end
+    end
+
+    for key, track in pairs(radarTracks) do
+        if track.station == node.id and not seen[key] then
+            radarTracks[key] = nil
+        end
+    end
+end
+
 local function applyRuntimeStatus(node, status)
     if not node or type(status) ~= "table" then return end
+
+    if status.radarStation == true then
+        applyRadarStatus(node, status)
+        node.lastStatus = now()
+        return
+    end
+
     node.multiLauncher = status.multiLauncher == true
     node.launcherCount = status.launcherCount
     node.launchers = status.launchers
@@ -581,6 +664,41 @@ local function handleMgmtEnvelope(envelope)
     end
 end
 
+local function handleRadarTrackEvent(node, encoded)
+    local ok, message = pcall(serialization.unserialize, encoded)
+    if not ok or type(message) ~= "table" or type(message.track) ~= "table" then
+        print("[RADAR ERROR] Invalid track event from " .. node.id)
+        return
+    end
+
+    local eventType = string.upper(tostring(message.event or ""))
+    local track = message.track
+    local key = radarTrackKey(node.id, track.id)
+
+    if eventType == "LOST" then
+        local existing = radarTracks[key] or applyRadarTrack(node, track)
+        if existing then
+            print("[RADAR] " .. node.id .. " TRACK #" .. tostring(track.id)
+                .. " LOST " .. tostring(existing.typeName)
+                .. " @ " .. tostring(existing.x) .. "," .. tostring(existing.y) .. "," .. tostring(existing.z))
+        end
+        radarTracks[key] = nil
+    elseif eventType == "ACQUIRED" or eventType == "UPDATE" then
+        local saved = applyRadarTrack(node, track)
+        if eventType == "ACQUIRED" and saved then
+            print("[RADAR] " .. node.id .. " TRACK #" .. tostring(track.id)
+                .. " ACQUIRED " .. tostring(saved.typeName)
+                .. " @ " .. tostring(saved.x) .. "," .. tostring(saved.y) .. "," .. tostring(saved.z))
+        end
+    end
+
+    local count = 0
+    for _, active in pairs(radarTracks) do
+        if active.station == node.id then count = count + 1 end
+    end
+    node.activeTrackCount = count
+end
+
 local function handleRuntimeEnvelope(envelope)
     local node = getNode(envelope.source)
     if not node then return end
@@ -592,6 +710,8 @@ local function handleRuntimeEnvelope(envelope)
     if responseType == "STATUS" then
         local ok, status = pcall(serialization.unserialize, payload[2])
         if ok and type(status) == "table" then applyRuntimeStatus(node, status) end
+    elseif responseType == "RADAR_TRACK" then
+        handleRadarTrackEvent(node, payload[2])
     elseif responseType == "ACK" then
         print("[ACK] " .. node.id .. " " .. tostring(payload[2]) .. " -> " .. tostring(payload[3]))
         requestRuntimeStatus(node)
@@ -653,10 +773,14 @@ local function printHeader()
     print("Deploy:       ACK/retry")
     print("Status poll:  " .. STATUS_INTERVAL .. "s")
     print("Strike:       payload-aware")
+    print("Radar:        network tracks")
     print("")
 end
 
-local function nodeMissileSummary(node)
+local function nodeAssetSummary(node)
+    if node.radarStation or tostring(node.role) == "radar" then
+        return tostring(node.activeTrackCount or 0) .. " TRACKS"
+    end
     if node.multiLauncher then
         return tostring(node.readyCount or 0) .. "/" .. tostring(node.launcherCount or 0) .. " READY"
     end
@@ -665,7 +789,7 @@ end
 
 local function printNodes()
     print("")
-    print("NODE       ROLE       RUNTIME   STATE     MISSILE              LINK")
+    print("NODE       ROLE       RUNTIME   STATE     ASSET                LINK")
     print("---------------------------------------------------------------------")
     local found = false
     for id, node in pairs(nodes) do
@@ -676,7 +800,7 @@ local function printNodes()
             string.upper(tostring(node.role)),
             clip(node.runtimeVersion, 9),
             clip(node.runtimeState, 9),
-            nodeMissileSummary(node),
+            nodeAssetSummary(node),
             nodeOnline(node) and "ONLINE" or "OFFLINE"
         ))
     end
@@ -702,8 +826,100 @@ local function printLauncherTable(node)
     end
 end
 
+local function printRadarNode(node)
+    if not node then print("Node not found."); return end
+    if tostring(node.role) ~= "radar" and not node.radarStation then
+        print("Node is not a radar station.")
+        return
+    end
+
+    print("")
+    print("RADAR STATION - " .. node.id)
+    print("============================================================")
+    print("Link:          " .. (nodeOnline(node) and "ONLINE" or "OFFLINE"))
+    print("Runtime:       " .. tostring(node.runtimeVersion or "---"))
+    print("State:         " .. tostring(node.runtimeState or "---"))
+    print("Physical radar:" .. " " .. tostring(node.radarCount or 0))
+    print("Active tracks: " .. tostring(node.activeTrackCount or 0))
+    print("")
+
+    for index, radar in ipairs(node.radars or {}) do
+        local powerText = tostring(radar.power or "---") .. "/" .. tostring(radar.maxPower or "---")
+        print("R" .. tostring(index) .. " " .. tostring(radar.shortAddress or radar.address or "---"))
+        print("  Pos:      X=" .. tostring(radar.x or "---")
+            .. " Y=" .. tostring(radar.y or "---") .. " Z=" .. tostring(radar.z or "---"))
+        print("  Range:    " .. tostring(radar.range or "---"))
+        print("  Power:    " .. powerText)
+        print("  Jammed:   " .. tostring(radar.jammed == true))
+        print("  Contacts: " .. tostring(radar.contacts or 0))
+        print("  Scan:     missiles=" .. tostring(radar.scanMissiles == true)
+            .. " shells=" .. tostring(radar.scanShells == true)
+            .. " players=" .. tostring(radar.scanPlayers == true)
+            .. " smart=" .. tostring(radar.smartMode == true))
+    end
+    print("")
+end
+
+local function trackState(track)
+    local node = getNode(track.station)
+    if not nodeOnline(node) then return "STALE" end
+    if now() - (track.lastUpdate or 0) > RADAR_TRACK_STALE_AFTER then return "STALE" end
+    return "ACTIVE"
+end
+
+local function printTracks(filterNode)
+    local filter = filterNode and string.upper(tostring(filterNode)) or nil
+    print("")
+    print("RADAR TRACKS" .. (filter and (" - " .. filter) or ""))
+    print("================================================================================")
+    print("STATION    TRACK TYPE             POSITION              SPEED    HDG      STATE")
+    print("--------------------------------------------------------------------------------")
+
+    local list = {}
+    for _, track in pairs(radarTracks) do
+        if not filter or track.station == filter then table.insert(list, track) end
+    end
+    table.sort(list, function(a, b)
+        if a.station == b.station then return tonumber(a.id) < tonumber(b.id) end
+        return a.station < b.station
+    end)
+
+    if #list == 0 then
+        print("No active radar tracks.")
+    else
+        for _, track in ipairs(list) do
+            local pos = string.format("%d,%d,%d", track.x or 0, track.y or 0, track.z or 0)
+            local hdg = string.format("%.0f %s", track.heading or 0, tostring(track.headingName or ""))
+            print(string.format(
+                "%-10s #% -4s %-16s %-21s %-8.1f %-8s %s",
+                track.station,
+                tostring(track.id),
+                clip(track.typeName or radarTypeName(track.typeId), 16),
+                pos,
+                track.totalSpeed or 0,
+                hdg,
+                trackState(track)
+            ))
+            if track.isPlayer and track.name then
+                print("           Player: " .. tostring(track.name))
+            end
+            print("           Velocity X=" .. string.format("%+.1f", track.vx or 0)
+                .. " Y=" .. string.format("%+.1f", track.vy or 0)
+                .. " Z=" .. string.format("%+.1f", track.vz or 0)
+                .. " seenBy=" .. table.concat(track.radars or {}, ","))
+        end
+    end
+    print("")
+end
+
 local function printStatus(node)
     if not node then print("Node not found."); return end
+
+    if tostring(node.role) == "radar" or node.radarStation then
+        printRadarNode(node)
+        return
+    end
+
     print("")
     print("----------------------------------------")
     print("NODE STATUS")
@@ -737,6 +953,31 @@ local function printStatus(node)
     if node.lastSeen then print("Last seen:   " .. string.format("%.1fs ago", now() - node.lastSeen)) end
     if node.lastStatus then print("Status age:  " .. string.format("%.1fs", now() - node.lastStatus)) end
     print("----------------------------------------")
+    print("")
+end
+
+local function printRadars()
+    print("")
+    print("RADAR STATIONS")
+    print("============================================================")
+    print("NODE       RADARS TRACKS RUNTIME   STATE     LINK")
+    print("------------------------------------------------------------")
+    local found = false
+    for _, node in pairs(nodes) do
+        if tostring(node.role) == "radar" or node.radarStation then
+            found = true
+            print(string.format(
+                "%-10s %-6s %-6s %-9s %-9s %s",
+                node.id,
+                tostring(node.radarCount or 0),
+                tostring(node.activeTrackCount or 0),
+                clip(node.runtimeVersion, 9),
+                clip(node.runtimeState, 9),
+                nodeOnline(node) and "ONLINE" or "OFFLINE"
+            ))
+        end
+    end
+    if not found then print("No radar stations discovered.") end
     print("")
 end
 
@@ -778,9 +1019,7 @@ end
 local function selectPayloadLaunchers(node, class, count)
     local selected = {}
     for _, launcher in ipairs(node.launchers or {}) do
-        if launcher.ready
-            and launcher.missileName
-            and launcher.missileName ~= ""
+        if launcher.ready and launcher.missileName and launcher.missileName ~= ""
             and payloadClass(launcher.missileName) == class
         then
             table.insert(selected, launcher)
@@ -828,12 +1067,7 @@ local function executeStrike(node, class, count, x, z)
         return
     end
 
-    sendOperational(
-        node,
-        "STRIKE",
-        serialization.serialize(plan),
-        serialization.serialize({x = x, z = z})
-    )
+    sendOperational(node, "STRIKE", serialization.serialize(plan), serialization.serialize({x = x, z = z}))
 end
 
 local function printHelp()
@@ -841,6 +1075,11 @@ local function printHelp()
     print("Management:")
     print("  discover | nodes | info <node> | sync")
     print("  deploy <node|all> | start <node> | stop <node> | restart <node>")
+    print("")
+    print("Radar:")
+    print("  radars")
+    print("  radar <node>")
+    print("  tracks [node]")
     print("")
     print("Operations:")
     print("  status <node> | ping <node>")
@@ -867,6 +1106,15 @@ local function execute(line)
     elseif command == "help" then printHelp()
     elseif command == "discover" then discover()
     elseif command == "nodes" then printNodes()
+    elseif command == "radars" then printRadars()
+    elseif command == "radar" then
+        local node = getNode(args[2]); if not node then print("Usage: radar <node>"); return end
+        requestRuntimeStatus(node)
+        os.sleep(0.5)
+        printRadarNode(node)
+    elseif command == "tracks" then
+        if args[2] and not getNode(args[2]) then print("Node not found."); return end
+        printTracks(args[2])
     elseif command == "sync" then
         if syncRepository() then reconcileAll(true) end
     elseif command == "info" then
@@ -913,6 +1161,10 @@ local function execute(line)
         sendOperational(node, "PING")
     elseif command == "arm" or command == "disarm" then
         local node = getNode(args[2]); if not node then print("Usage: " .. command .. " <node> [launcher|all]"); return end
+        if tostring(node.role) == "radar" then
+            print("Radar nodes do not support arm/disarm.")
+            return
+        end
         if node.multiLauncher then
             local selector = args[3]
             if not selector then print("Usage: " .. command .. " <node> <launcher|all>"); return end
