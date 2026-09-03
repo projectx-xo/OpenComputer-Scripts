@@ -5,7 +5,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "1.2.0"
+local VERSION = "1.2.1"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/"
 local SCRIPT_PATH = "/home/stratcom/node.lua"
 local CONFIG_PATH = "/home/stratcom/config.lua"
@@ -32,7 +32,9 @@ local function isNewer(remote, localVersion)
 end
 
 local function cacheBust(url)
-    local token = tostring(math.floor(computer.uptime() * 1000)) .. "-" .. tostring(math.random(100000, 999999))
+    local token = tostring(math.floor(computer.uptime() * 1000))
+        .. "-"
+        .. tostring(math.random(100000, 999999))
     local separator = url:find("?", 1, true) and "&" or "?"
     return url .. separator .. "cb=" .. token
 end
@@ -92,7 +94,6 @@ checkForUpdates()
 
 if not filesystem.exists(CONFIG_PATH) then
     io.stderr:write("FATAL: Missing " .. CONFIG_PATH .. "\n")
-    io.stderr:write("Create it from node/config.example.lua and set this site's id/role.\n")
     return
 end
 
@@ -129,38 +130,33 @@ local function findLauncherInventorySide()
 
     for side = 0, 5 do
         local ok, size = pcall(inventory.getInventorySize, side)
-        if ok and size == 7 then
-            return side
-        end
+        if ok and size == 7 then return side end
     end
 
     return nil
 end
 
 local function getMissileInfo()
-    if not inventory then
-        return "", "", 0
-    end
+    if not inventory then return "", "", 0 end
 
     if launcherInventorySide == nil then
         launcherInventorySide = findLauncherInventorySide()
     end
 
-    if launcherInventorySide == nil then
-        return "", "", 0
-    end
+    if launcherInventorySide == nil then return "", "", 0 end
 
     local ok, stack = pcall(inventory.getStackInSlot, launcherInventorySide, 1)
-    if not ok or not stack then
-        return "", "", 0
-    end
+    if not ok or not stack then return "", "", 0 end
 
-    return tostring(stack.name or ""), tostring(stack.label or ""), tonumber(stack.size) or 0
+    return tostring(stack.name or ""),
+        tostring(stack.label or ""),
+        tonumber(stack.size) or 0
 end
 
 local function getStatus()
     local energy, maxEnergy = launchPad.getEnergyInfo()
-    local fuel, fuelMax, fuelType, oxidizer, oxidizerMax, oxidizerType = launchPad.getFluid()
+    local fuel, fuelMax, fuelType, oxidizer, oxidizerMax, oxidizerType =
+        launchPad.getFluid()
     local missileName, missileLabel, missileCount = getMissileInfo()
     local tier = launchPad.getTier()
     if tier == nil then tier = -1 end
@@ -192,8 +188,13 @@ local function broadcast(...)
 end
 
 local function sendStatus(remoteAddress)
-    local payload = serialization.serialize(getStatus())
-    send(remoteAddress, "STATUS", NODE_ID, NODE_ROLE, payload)
+    send(
+        remoteAddress,
+        "STATUS",
+        NODE_ID,
+        NODE_ROLE,
+        serialization.serialize(getStatus())
+    )
 end
 
 local function sendHeartbeat()
@@ -211,10 +212,28 @@ local function sendHeartbeat()
     lastHeartbeat = computer.uptime()
 end
 
+-- These packet types are emitted by nodes/central as responses or telemetry.
+-- A field node must never answer them, or two nodes can create a feedback loop.
+local IGNORE_PACKET = {
+    HELLO = true,
+    HEARTBEAT = true,
+    PONG = true,
+    IDENTIFY = true,
+    ACK = true,
+    ERROR = true,
+    LAUNCH_RESULT = true,
+}
+
 local function handleCommand(remoteAddress, command, arg1, arg2)
+    if IGNORE_PACKET[command] then
+        return
+    end
+
     if command == "PING" then
         log("PING <- " .. remoteAddress)
         send(remoteAddress, "PONG", NODE_ID, NODE_ROLE)
+    elseif command == "DISCOVER" then
+        send(remoteAddress, "IDENTIFY", NODE_ID, NODE_ROLE)
     elseif command == "STATUS" then
         log("STATUS requested")
         sendStatus(remoteAddress)
@@ -226,8 +245,6 @@ local function handleCommand(remoteAddress, command, arg1, arg2)
         armed = false
         log("DISARMED by " .. remoteAddress)
         send(remoteAddress, "ACK", NODE_ID, "DISARM", true)
-    elseif command == "IDENTIFY" then
-        send(remoteAddress, "IDENTIFY", NODE_ID, NODE_ROLE)
     elseif command == "LAUNCH" then
         if not armed then
             send(remoteAddress, "ERROR", NODE_ID, "DISARMED")
@@ -240,6 +257,7 @@ local function handleCommand(remoteAddress, command, arg1, arg2)
             send(remoteAddress, "ERROR", NODE_ID, "INVALID_COORDINATES")
             return
         end
+
         if not launchPad.canLaunch() then
             send(remoteAddress, "ERROR", NODE_ID, "NOT_READY")
             return
@@ -253,7 +271,9 @@ local function handleCommand(remoteAddress, command, arg1, arg2)
         send(remoteAddress, "ACK", NODE_ID, "SHUTDOWN_NODE", true)
         running = false
     else
-        send(remoteAddress, "ERROR", NODE_ID, "UNKNOWN_COMMAND", tostring(command))
+        -- Unknown network traffic is ignored rather than answered. This prevents
+        -- malformed or third-party packets from creating an error-response loop.
+        log("Ignored unknown packet: " .. tostring(command))
     end
 end
 
@@ -270,8 +290,22 @@ print("Node ID:     " .. NODE_ID)
 print("Role:        " .. NODE_ROLE)
 print("Port:        " .. PORT)
 print("Launch Pad:  CONNECTED")
-print("Inventory:   " .. (launcherInventorySide ~= nil and ("CONNECTED (side " .. launcherInventorySide .. ")") or "UNAVAILABLE"))
-print("Missile:     " .. (initialStatus.missileLabel ~= "" and initialStatus.missileLabel or "UNKNOWN"))
+print(
+    "Inventory:   "
+        .. (
+            launcherInventorySide ~= nil
+                and ("CONNECTED (side " .. launcherInventorySide .. ")")
+            or "UNAVAILABLE"
+        )
+)
+print(
+    "Missile:     "
+        .. (
+            initialStatus.missileLabel ~= ""
+                and initialStatus.missileLabel
+            or "UNKNOWN"
+        )
+)
 print("Armed:       " .. tostring(initialStatus.armed))
 print("Ready:       " .. tostring(initialStatus.ready))
 print("Tier:        " .. tostring(initialStatus.tier))
