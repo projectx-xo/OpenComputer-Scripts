@@ -5,7 +5,7 @@ local filesystem = require("filesystem")
 local serialization = require("serialization")
 local keyboard = require("keyboard")
 
-local VERSION = "2.1.0"
+local VERSION = "2.1.1"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
@@ -276,7 +276,7 @@ local function beginDeployment(version, totalChunks)
         file = file,
     }
 
-    sendMgmt("MGMT_ACK", "DEPLOY_BEGIN", deployment.version)
+    sendMgmt("MGMT_ACK", "DEPLOY_BEGIN", true, deployment.version)
 end
 
 local function receiveChunk(index, data)
@@ -286,18 +286,27 @@ local function receiveChunk(index, data)
     end
 
     local chunkIndex = tonumber(index)
+
+    -- A retry can arrive after the original chunk was written but its ACK was lost.
+    -- Re-ACK the immediately previous chunk without writing it twice.
+    if chunkIndex == deployment.next - 1 then
+        sendMgmt("MGMT_ACK", "DEPLOY_CHUNK", true, chunkIndex)
+        return
+    end
+
     if chunkIndex ~= deployment.next then
         sendMgmt(
             "MGMT_ERROR",
             "DEPLOY_CHUNK",
             "EXPECTED_" .. tostring(deployment.next)
         )
-        abortDeployment()
         return
     end
 
     deployment.file:write(tostring(data or ""))
+    deployment.file:flush()
     deployment.next = deployment.next + 1
+    sendMgmt("MGMT_ACK", "DEPLOY_CHUNK", true, chunkIndex)
 end
 
 local function commitDeployment(version)
@@ -314,7 +323,6 @@ local function commitDeployment(version)
 
     if deployment.next ~= deployment.total + 1 then
         sendMgmt("MGMT_ERROR", "DEPLOY_COMMIT", "MISSING_CHUNKS")
-        abortDeployment()
         return
     end
 
