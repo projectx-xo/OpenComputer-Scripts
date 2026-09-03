@@ -4,8 +4,9 @@ local computer = require("computer")
 local term = require("term")
 local shell = require("shell")
 local filesystem = require("filesystem")
+local serialization = require("serialization")
 
-local VERSION = "1.1.0"
+local VERSION = "1.1.1"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/"
 local SCRIPT_PATH = "/home/stratcom/central.lua"
 local TMP_VERSION = "/tmp/stratcom-central-version.txt"
@@ -35,7 +36,7 @@ end
 
 local function download(url, path)
     if filesystem.exists(path) then filesystem.remove(path) end
-    local ok = shell.execute("wget -fq " .. url .. " " .. path)
+    local ok = shell.execute("wget -f " .. url .. " " .. path)
     return ok and filesystem.exists(path)
 end
 
@@ -149,6 +150,23 @@ local function registerNode(address, id, role)
     return node
 end
 
+local function applyStatus(node, status)
+    if not node or type(status) ~= "table" then return end
+
+    node.armed = status.armed
+    node.ready = status.ready
+    node.tier = status.tier
+    node.energy = status.energy
+    node.maxEnergy = status.maxEnergy
+    node.fuel = status.fuel
+    node.fuelMax = status.fuelMax
+    node.fuelType = status.fuelType
+    node.oxidizer = status.oxidizer
+    node.oxidizerMax = status.oxidizerMax
+    node.oxidizerType = status.oxidizerType
+    node.lastStatus = now()
+end
+
 local function onModemMessage(_, _, remoteAddress, port, _, messageType, ...)
     if port ~= PORT then return end
     local args = {...}
@@ -173,18 +191,14 @@ local function onModemMessage(_, _, remoteAddress, port, _, messageType, ...)
     elseif messageType == "STATUS" then
         local node = registerNode(remoteAddress, args[1], args[2])
         if node then
-            node.armed = args[3]
-            node.ready = args[4]
-            node.tier = args[5]
-            node.energy = args[6]
-            node.maxEnergy = args[7]
-            node.fuel = args[8]
-            node.fuelMax = args[9]
-            node.fuelType = args[10]
-            node.oxidizer = args[11]
-            node.oxidizerMax = args[12]
-            node.oxidizerType = args[13]
-            node.lastStatus = now()
+            local ok, status = pcall(serialization.unserialize, args[3])
+            if ok and type(status) == "table" then
+                applyStatus(node, status)
+            else
+                print("")
+                print("[ERROR] Invalid STATUS payload from " .. tostring(args[1]))
+                io.write("STRATCOM> ")
+            end
         end
     elseif messageType == "ACK" then
         print("")
