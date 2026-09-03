@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "1.1.1"
+local VERSION = "1.1.2"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/"
 local SCRIPT_PATH = "/home/stratcom/central.lua"
 local TMP_VERSION = "/tmp/stratcom-central-version.txt"
@@ -34,9 +34,16 @@ local function isNewer(remote, localVersion)
     return rc > lc
 end
 
+local function cacheBust(url, token)
+    local separator = url:find("?", 1, true) and "&" or "?"
+    token = token or tostring(math.floor(computer.uptime() * 1000))
+    return url .. separator .. "cb=" .. tostring(token)
+end
+
 local function download(url, path)
     if filesystem.exists(path) then filesystem.remove(path) end
-    local ok = shell.execute("wget -f " .. url .. " " .. path)
+    local command = string.format('wget -f "%s" "%s"', url, path)
+    local ok = shell.execute(command)
     return ok and filesystem.exists(path)
 end
 
@@ -51,7 +58,8 @@ end
 local function checkForUpdates()
     print("[UPDATE] Checking GitHub...")
 
-    if not download(BASE_URL .. "version.txt", TMP_VERSION) then
+    local versionUrl = cacheBust(BASE_URL .. "version.txt")
+    if not download(versionUrl, TMP_VERSION) then
         print("[UPDATE] GitHub unavailable; continuing with v" .. VERSION)
         return false
     end
@@ -63,7 +71,8 @@ local function checkForUpdates()
     end
 
     print("[UPDATE] v" .. remoteVersion .. " available; downloading...")
-    if not download(BASE_URL .. "central.lua", TMP_SCRIPT) then
+    local scriptUrl = cacheBust(BASE_URL .. "central.lua", remoteVersion)
+    if not download(scriptUrl, TMP_SCRIPT) then
         print("[UPDATE] Download failed; continuing with v" .. VERSION)
         return false
     end
