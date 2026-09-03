@@ -4,8 +4,10 @@ local serialization = require("serialization")
 local context = nil
 local launchPad = nil
 local inventory = nil
-local launcherInventorySide = nil
 local armed = false
+
+local MISSILE_PREFIX = "hbm:item.missile_"
+local BATTERY_PREFIX = "hbm:item.battery_"
 
 local function findComponent(componentType)
     local address = component.list(componentType)()
@@ -13,39 +15,51 @@ local function findComponent(componentType)
     return component.proxy(address)
 end
 
-local function findLauncherInventorySide()
-    if not inventory then return nil end
-
-    for side = 0, 5 do
-        local ok, size = pcall(inventory.getInventorySize, side)
-        if ok and size == 7 then return side end
-    end
-
-    return nil
+local function startsWith(value, prefix)
+    value = tostring(value or "")
+    return value:sub(1, #prefix) == prefix
 end
 
 local function getMissileInfo()
-    if not inventory then return "", "", 0 end
+    if not inventory then return "", "", 0, nil end
 
-    if launcherInventorySide == nil then
-        launcherInventorySide = findLauncherInventorySide()
+    local batterySide = nil
+
+    for side = 0, 5 do
+        local okSize, size = pcall(inventory.getInventorySize, side)
+        if okSize and type(size) == "number" and size > 0 then
+            for slot = 1, size do
+                local okStack, stack = pcall(inventory.getStackInSlot, side, slot)
+                if okStack and stack then
+                    local name = tostring(stack.name or "")
+
+                    if startsWith(name, MISSILE_PREFIX) then
+                        return name,
+                            tostring(stack.label or name),
+                            tonumber(stack.size) or 0,
+                            side
+                    end
+
+                    if batterySide == nil and startsWith(name, BATTERY_PREFIX) then
+                        batterySide = side
+                    end
+                end
+            end
+        end
     end
 
-    if launcherInventorySide == nil then return "", "", 0 end
+    if batterySide ~= nil then
+        return "", "UNLOADED", 0, batterySide
+    end
 
-    local ok, stack = pcall(inventory.getStackInSlot, launcherInventorySide, 1)
-    if not ok or not stack then return "", "", 0 end
-
-    return tostring(stack.name or ""),
-        tostring(stack.label or ""),
-        tonumber(stack.size) or 0
+    return "", "", 0, nil
 end
 
 local function getStatus()
     local energy, maxEnergy = launchPad.getEnergyInfo()
     local fuel, fuelMax, fuelType, oxidizer, oxidizerMax, oxidizerType =
         launchPad.getFluid()
-    local missileName, missileLabel, missileCount = getMissileInfo()
+    local missileName, missileLabel, missileCount, inventorySide = getMissileInfo()
     local tier = launchPad.getTier()
 
     if tier == nil then tier = -1 end
@@ -65,7 +79,7 @@ local function getStatus()
         missileName = missileName,
         missileLabel = missileLabel,
         missileCount = missileCount,
-        inventorySide = launcherInventorySide,
+        inventorySide = inventorySide,
     }
 end
 
@@ -75,7 +89,6 @@ function runtime.start(ctx)
     context = assert(ctx, "runtime context is required")
     launchPad = findComponent("ntm_launch_pad")
     inventory = findComponent("inventory_controller")
-    launcherInventorySide = findLauncherInventorySide()
     armed = false
 
     if not launchPad then
