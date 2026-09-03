@@ -6,7 +6,7 @@ local filesystem = require("filesystem")
 local serialization = require("serialization")
 local keyboard = require("keyboard")
 
-local VERSION = "1.2.2"
+local VERSION = "1.2.3"
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/"
 local SCRIPT_PATH = "/home/stratcom/node.lua"
 local CONFIG_PATH = "/home/stratcom/config.lua"
@@ -314,10 +314,11 @@ broadcast("HELLO", NODE_ID, NODE_ROLE)
 sendHeartbeat()
 
 while running do
-    local eventName, address, arg1, arg2, arg3, arg4, arg5 = event.pull(1)
+    local eventName, address, arg1, arg2, arg3, arg4, arg5, arg6 = event.pull(1)
 
     if eventName == "key_down" then
         local keyCode = arg2
+
         if keyCode == keyboard.keys.c and keyboard.isControlDown(address) then
             log("Local Ctrl+C shutdown requested")
             running = false
@@ -327,14 +328,7 @@ while running do
         local port = arg2
         local command = arg4
         local commandArg1 = arg5
-        local commandArg2 = select(7, event.pull(0))
-
-        -- modem_message layout from event.pull is:
-        -- name, localAddress, remoteAddress, port, distance, ...
-        -- Re-read using the captured positions below instead of filtering out
-        -- keyboard events.
-        remoteAddress = arg1
-        port = arg2
+        local commandArg2 = arg6
 
         if port == PORT then
             handleCommand(remoteAddress, command, commandArg1, commandArg2)
