@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.3.0"
+local VERSION = "2.4.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -31,6 +31,14 @@ local CHUNK_SIZE = 2048
 local DEPLOY_TIMEOUT = 3
 local DEPLOY_MAX_RETRIES = 4
 local RADAR_TRACK_STALE_AFTER = 10
+
+local ABM_NODE_ID = "ABM-A1"
+local ABM_MISSILE_ID = "hbm:item.missile_anti-ballistic"
+local DEFENSE_CONFIRM_SAMPLES = 2
+local DEFENSE_MAX_TCA = 120
+local DEFENSE_LEAD_SECONDS = 2
+local DEFENSE_POST_LAUNCH_TIMEOUT = 8
+local DEFENSE_REENGAGE_COOLDOWN = 10
 
 local VALID_CLASSES = {
     nuclear = true,
@@ -155,10 +163,20 @@ local nodes = {}
 local desiredRuntimes = {}
 local payloadCatalog = {}
 local radarTracks = {}
+local engagementHistory = {}
+local activeEngagements = {}
+local pendingArm = nil
 local running = true
 local messageCounter = 0
 local seenMessages = {}
 local lastPrune = 0
+
+local defense = {
+    auto = false,
+    protectX = nil,
+    protectZ = nil,
+    radius = nil,
+}
 
 local function now()
     return computer.uptime()
@@ -276,6 +294,16 @@ local function originate(port, destination, kind, payload, ttl)
     return transmitEnvelope(port, envelope)
 end
 
+local function sendMgmt(node, command, ...)
+    if not node then return false end
+    return originate(MGMT_PORT, node.id, "MGMT", {command, ...})
+end
+
+local function sendOperational(node, command, ...)
+    if not node or not nodeOnline(node) then return false end
+    return originate(OP_PORT, node.id, "CMD", {command, ...})
+end
+
 local function syncRepository()
     print("[REPO] Syncing runtime repository from GitHub...")
     if download(BASE_URL .. "runtime/manifest.lua", TMP_MANIFEST) then
@@ -333,16 +361,6 @@ local function syncRepository()
         end
     end
     return true
-end
-
-local function sendMgmt(node, command, ...)
-    if not node then return false end
-    return originate(MGMT_PORT, node.id, "MGMT", {command, ...})
-end
-
-local function sendOperational(node, command, ...)
-    if not node or not nodeOnline(node) then return false end
-    return originate(OP_PORT, node.id, "CMD", {command, ...})
 end
 
 local function requestRuntimeStatus(node)
@@ -503,6 +521,7 @@ end
 local function applyRadarTrack(node, track)
     if not node or type(track) ~= "table" or track.id == nil then return nil end
     local key = radarTrackKey(node.id, track.id)
+    local previous = radarTracks[key]
     radarTracks[key] = {
         key = key,
         station = node.id,
@@ -524,6 +543,8 @@ local function applyRadarTrack(node, track)
         radars = track.radars or {},
         age = tonumber(track.age) or 0,
         lastUpdate = now(),
+        threatSamples = previous and previous.threatSamples or 0,
+        lastEngaged = previous and previous.lastEngaged or nil,
     }
     return radarTracks[key]
 end
@@ -579,6 +600,198 @@ local function applyRuntimeStatus(node, status)
     node.missileCount = status.missileCount
     node.inventorySide = status.inventorySide
     node.lastStatus = now()
+end
+
+local function defenseZoneConfigured()
+    return defense.protectX ~= nil and defense.protectZ ~= nil
+        and defense.radius ~= nil and defense.radius > 0
+end
+
+local function automaticThreatType(track)
+    local typeId = tonumber(track and track.typeId)
+    return typeId ~= nil and typeId >= 0 and typeId <= 9
+end
+
+local function closestApproach(track)
+    if not defenseZoneConfigured() then return nil end
+    local x = tonumber(track.x)
+    local z = tonumber(track.z)
+    local vx = tonumber(track.vx) or 0
+    local vz = tonumber(track.vz) or 0
+    if not x or not z then return nil end
+
+    local speed2 = vx * vx + vz * vz
+    if speed2 < 1 then return nil end
+
+    local rx = x - defense.protectX
+    local rz = z - defense.protectZ
+    local t = -((rx * vx) + (rz * vz)) / speed2
+    if t <= 0 or t > DEFENSE_MAX_TCA then return nil end
+
+    local cx = x + vx * t
+    local cz = z + vz * t
+    local dx = cx - defense.protectX
+    local dz = cz - defense.protectZ
+    local closest = math.sqrt(dx * dx + dz * dz)
+
+    return {
+        t = t,
+        closest = closest,
+        projectedX = cx,
+        projectedZ = cz,
+        inbound = closest <= defense.radius,
+    }
+end
+
+local function abmReady()
+    local node = getNode(ABM_NODE_ID)
+    if not node then return false, "ABM_NODE_NOT_DISCOVERED" end
+    if not nodeOnline(node) then return false, "ABM_OFFLINE" end
+    if node.runtimeState ~= "running" then return false, "ABM_RUNTIME_NOT_RUNNING" end
+    if node.ready ~= true then return false, "ABM_NOT_READY" end
+    if tostring(node.missileName or "") ~= ABM_MISSILE_ID then
+        return false, "WRONG_ABM_PAYLOAD"
+    end
+    return true, node
+end
+
+local function historyPush(entry)
+    table.insert(engagementHistory, entry)
+    while #engagementHistory > 30 do table.remove(engagementHistory, 1) end
+end
+
+local function finishEngagement(engagement, state, detail)
+    if not engagement then return end
+    engagement.state = state
+    engagement.detail = detail
+    engagement.finishedAt = now()
+    activeEngagements[engagement.trackKey] = nil
+    if pendingArm == engagement then pendingArm = nil end
+    historyPush(engagement)
+    print("[DEFENSE] " .. state .. " " .. engagement.trackKey
+        .. (detail and (" - " .. tostring(detail)) or ""))
+end
+
+local function launchPendingEngagement()
+    local engagement = pendingArm
+    if not engagement or engagement.state ~= "ARMING" then return end
+
+    local node = getNode(ABM_NODE_ID)
+    if not nodeOnline(node) then
+        finishEngagement(engagement, "ABORTED", "ABM_OFFLINE_AFTER_ARM")
+        return
+    end
+
+    engagement.state = "LAUNCHING"
+    engagement.launchSentAt = now()
+    print("[DEFENSE] " .. ABM_NODE_ID .. " engaging " .. engagement.trackKey
+        .. " target X=" .. math.floor(engagement.targetX + 0.5)
+        .. " Z=" .. math.floor(engagement.targetZ + 0.5))
+    sendOperational(node, "LAUNCH", engagement.targetX, engagement.targetZ)
+end
+
+local function createEngagement(track, approach)
+    local ok, nodeOrReason = abmReady()
+    if not ok then
+        track.lastDefenseHoldReason = nodeOrReason
+        return false
+    end
+    if pendingArm then
+        track.lastDefenseHoldReason = "ABM_BUSY"
+        return false
+    end
+
+    local targetX = track.x + (track.vx or 0) * DEFENSE_LEAD_SECONDS
+    local targetZ = track.z + (track.vz or 0) * DEFENSE_LEAD_SECONDS
+    local engagement = {
+        trackKey = track.key,
+        station = track.station,
+        trackId = track.id,
+        typeId = track.typeId,
+        typeName = track.typeName,
+        state = "ARMING",
+        createdAt = now(),
+        targetX = targetX,
+        targetZ = targetZ,
+        closestApproach = approach.closest,
+        timeToClosest = approach.t,
+        abmNode = ABM_NODE_ID,
+    }
+
+    activeEngagements[track.key] = engagement
+    pendingArm = engagement
+    track.lastEngaged = now()
+    print("[DEFENSE] Threat confirmed " .. track.key
+        .. " " .. tostring(track.typeName)
+        .. " closest=" .. string.format("%.1f", approach.closest)
+        .. " tca=" .. string.format("%.1fs", approach.t))
+    sendOperational(nodeOrReason, "ARM")
+    return true
+end
+
+local function evaluateTrackForDefense(track)
+    if not defense.auto or not defenseZoneConfigured() then
+        track.threatSamples = 0
+        return
+    end
+
+    if not automaticThreatType(track) then
+        track.threatSamples = 0
+        return
+    end
+
+    local approach = closestApproach(track)
+    if not approach or not approach.inbound then
+        track.threatSamples = 0
+        return
+    end
+
+    track.threatSamples = (track.threatSamples or 0) + 1
+    if track.threatSamples < DEFENSE_CONFIRM_SAMPLES then return end
+
+    if activeEngagements[track.key] then return end
+    if track.lastEngaged and now() - track.lastEngaged < DEFENSE_REENGAGE_COOLDOWN then return end
+
+    createEngagement(track, approach)
+end
+
+local function defenseTick()
+    if defense.auto then
+        for _, track in pairs(radarTracks) do
+            evaluateTrackForDefense(track)
+        end
+    end
+
+    for key, engagement in pairs(activeEngagements) do
+        if engagement.state == "FIRED"
+            and engagement.firedAt
+            and now() - engagement.firedAt >= DEFENSE_POST_LAUNCH_TIMEOUT
+        then
+            local track = radarTracks[key]
+            if track then
+                finishEngagement(engagement, "MISS", "TRACK_STILL_ACTIVE")
+                track.lastEngaged = now()
+            end
+        elseif engagement.state == "ARMING" and now() - engagement.createdAt > 5 then
+            finishEngagement(engagement, "ABORTED", "ARM_TIMEOUT")
+        elseif engagement.state == "LAUNCHING"
+            and engagement.launchSentAt
+            and now() - engagement.launchSentAt > 5
+        then
+            finishEngagement(engagement, "ABORTED", "LAUNCH_TIMEOUT")
+        end
+    end
+end
+
+local function handleTrackLostForDefense(key)
+    local engagement = activeEngagements[key]
+    if not engagement then return end
+
+    if engagement.state == "FIRED" or engagement.state == "LAUNCHING" then
+        finishEngagement(engagement, "TRACK_LOST", "POSSIBLE_INTERCEPT")
+    elseif engagement.state == "ARMING" then
+        finishEngagement(engagement, "ABORTED", "TRACK_LOST_BEFORE_LAUNCH")
+    end
 end
 
 local function handleMgmtEnvelope(envelope)
@@ -682,6 +895,7 @@ local function handleRadarTrackEvent(node, encoded)
                 .. " LOST " .. tostring(existing.typeName)
                 .. " @ " .. tostring(existing.x) .. "," .. tostring(existing.y) .. "," .. tostring(existing.z))
         end
+        handleTrackLostForDefense(key)
         radarTracks[key] = nil
     elseif eventType == "ACQUIRED" or eventType == "UPDATE" then
         local saved = applyRadarTrack(node, track)
@@ -690,6 +904,7 @@ local function handleRadarTrackEvent(node, encoded)
                 .. " ACQUIRED " .. tostring(saved.typeName)
                 .. " @ " .. tostring(saved.x) .. "," .. tostring(saved.y) .. "," .. tostring(saved.z))
         end
+        if saved then evaluateTrackForDefense(saved) end
     end
 
     local count = 0
@@ -713,14 +928,42 @@ local function handleRuntimeEnvelope(envelope)
     elseif responseType == "RADAR_TRACK" then
         handleRadarTrackEvent(node, payload[2])
     elseif responseType == "ACK" then
-        print("[ACK] " .. node.id .. " " .. tostring(payload[2]) .. " -> " .. tostring(payload[3]))
+        local command = tostring(payload[2] or "")
+        local success = payload[3]
+        print("[ACK] " .. node.id .. " " .. command .. " -> " .. tostring(success))
+
+        if node.id == ABM_NODE_ID and command == "ARM" and pendingArm then
+            if success == true then
+                launchPendingEngagement()
+            else
+                finishEngagement(pendingArm, "ABORTED", "ARM_REJECTED")
+            end
+        end
         requestRuntimeStatus(node)
     elseif responseType == "ERROR" then
-        print("[ERROR] " .. node.id .. ": " .. tostring(payload[2]))
+        local code = tostring(payload[2])
+        print("[ERROR] " .. node.id .. ": " .. code)
+        if node.id == ABM_NODE_ID and pendingArm then
+            finishEngagement(pendingArm, "ABORTED", code)
+        end
     elseif responseType == "LAUNCH_RESULT" then
-        print("[LAUNCH] " .. node.id .. " success=" .. tostring(payload[2])
-            .. " launcher=" .. tostring(payload[3])
-            .. " X=" .. tostring(payload[4]) .. " Z=" .. tostring(payload[5]))
+        if node.id == ABM_NODE_ID and pendingArm then
+            local success = payload[2] == true
+            local engagement = pendingArm
+            pendingArm = nil
+            if success then
+                engagement.state = "FIRED"
+                engagement.firedAt = now()
+                engagement.launchResult = "SUCCESS"
+                print("[DEFENSE] ABM fired for " .. engagement.trackKey)
+            else
+                finishEngagement(engagement, "FAILED", "ABM_LAUNCH_FAILED")
+            end
+        else
+            print("[LAUNCH] " .. node.id .. " success=" .. tostring(payload[2])
+                .. " a=" .. tostring(payload[3]) .. " b=" .. tostring(payload[4])
+                .. " c=" .. tostring(payload[5]))
+        end
         event.timer(1, function() requestRuntimeStatus(node) end, 1)
     elseif responseType == "STRIKE_RESULT" then
         local ok, results = pcall(serialization.unserialize, payload[2])
@@ -774,6 +1017,7 @@ local function printHeader()
     print("Status poll:  " .. STATUS_INTERVAL .. "s")
     print("Strike:       payload-aware")
     print("Radar:        network tracks")
+    print("Defense:      " .. (defense.auto and "AUTO" or "MANUAL"))
     print("")
 end
 
@@ -839,7 +1083,7 @@ local function printRadarNode(node)
     print("Link:          " .. (nodeOnline(node) and "ONLINE" or "OFFLINE"))
     print("Runtime:       " .. tostring(node.runtimeVersion or "---"))
     print("State:         " .. tostring(node.runtimeState or "---"))
-    print("Physical radar:" .. " " .. tostring(node.radarCount or 0))
+    print("Physical radar: " .. tostring(node.radarCount or 0))
     print("Active tracks: " .. tostring(node.activeTrackCount or 0))
     print("")
 
@@ -891,7 +1135,7 @@ local function printTracks(filterNode)
             local pos = string.format("%d,%d,%d", track.x or 0, track.y or 0, track.z or 0)
             local hdg = string.format("%.0f %s", track.heading or 0, tostring(track.headingName or ""))
             print(string.format(
-                "%-10s #% -4s %-16s %-21s %-8.1f %-8s %s",
+                "%-10s #%-4s %-16s %-21s %-8.1f %-8s %s",
                 track.station,
                 tostring(track.id),
                 clip(track.typeName or radarTypeName(track.typeId), 16),
@@ -900,9 +1144,12 @@ local function printTracks(filterNode)
                 hdg,
                 trackState(track)
             ))
-            if track.isPlayer and track.name then
-                print("           Player: " .. tostring(track.name))
+            local approach = closestApproach(track)
+            if approach and approach.inbound then
+                print("           THREAT closest=" .. string.format("%.1f", approach.closest)
+                    .. " tca=" .. string.format("%.1fs", approach.t))
             end
+            if track.isPlayer and track.name then print("           Player: " .. tostring(track.name)) end
             print("           Velocity X=" .. string.format("%+.1f", track.vx or 0)
                 .. " Y=" .. string.format("%+.1f", track.vy or 0)
                 .. " Z=" .. string.format("%+.1f", track.vz or 0)
@@ -914,7 +1161,6 @@ end
 
 local function printStatus(node)
     if not node then print("Node not found."); return end
-
     if tostring(node.role) == "radar" or node.radarStation then
         printRadarNode(node)
         return
@@ -1010,6 +1256,53 @@ local function printPayloads(node)
     print("")
 end
 
+local function printDefenseStatus()
+    local abm = getNode(ABM_NODE_ID)
+    local ready, reason = abmReady()
+    print("")
+    print("AUTOMATIC DEFENSE")
+    print("============================================================")
+    print("Mode:          " .. (defense.auto and "AUTO" or "OFF"))
+    if defenseZoneConfigured() then
+        print("Protected:     X=" .. defense.protectX .. " Z=" .. defense.protectZ
+            .. " radius=" .. defense.radius)
+    else
+        print("Protected:     NOT CONFIGURED")
+    end
+    print("Interceptor:   " .. ABM_NODE_ID)
+    print("ABM online:    " .. tostring(nodeOnline(abm)))
+    print("ABM runtime:   " .. tostring(abm and abm.runtimeState or "---"))
+    print("ABM ready:     " .. tostring(ready) .. (ready and "" or (" (" .. tostring(reason) .. ")")))
+    print("ABM missile:   " .. tostring(abm and abm.missileName or "---"))
+    print("Active engage: " .. tostring(pendingArm and pendingArm.trackKey or "none"))
+    print("Confirm:       " .. DEFENSE_CONFIRM_SAMPLES .. " radar updates")
+    print("============================================================")
+    print("")
+end
+
+local function printEngagements()
+    print("")
+    print("ENGAGEMENT HISTORY")
+    print("================================================================================")
+    if #engagementHistory == 0 then
+        print("No completed engagements.")
+    else
+        for i = #engagementHistory, 1, -1 do
+            local e = engagementHistory[i]
+            print(string.format(
+                "%-18s %-10s %-12s target=%d,%d %s",
+                tostring(e.trackKey),
+                tostring(e.typeName),
+                tostring(e.state),
+                tonumber(e.targetX) or 0,
+                tonumber(e.targetZ) or 0,
+                tostring(e.detail or "")
+            ))
+        end
+    end
+    print("")
+end
+
 local function splitWords(line)
     local words = {}
     for word in string.gmatch(line or "", "%S+") do table.insert(words, word) end
@@ -1081,6 +1374,12 @@ local function printHelp()
     print("  radar <node>")
     print("  tracks [node]")
     print("")
+    print("Defense:")
+    print("  defense protect <x> <z> <radius>")
+    print("  defense auto on|off")
+    print("  defense status")
+    print("  engagements")
+    print("")
     print("Operations:")
     print("  status <node> | ping <node>")
     print("  arm <node> [launcher|all]")
@@ -1115,6 +1414,42 @@ local function execute(line)
     elseif command == "tracks" then
         if args[2] and not getNode(args[2]) then print("Node not found."); return end
         printTracks(args[2])
+    elseif command == "defense" then
+        local sub = string.lower(args[2] or "")
+        if sub == "protect" then
+            local x = tonumber(args[3])
+            local z = tonumber(args[4])
+            local radius = tonumber(args[5])
+            if not x or not z or not radius or radius <= 0 then
+                print("Usage: defense protect <x> <z> <radius>")
+                return
+            end
+            defense.protectX = x
+            defense.protectZ = z
+            defense.radius = radius
+            print("[DEFENSE] Protected zone X=" .. x .. " Z=" .. z .. " radius=" .. radius)
+        elseif sub == "auto" then
+            local value = string.lower(args[3] or "")
+            if value == "on" then
+                if not defenseZoneConfigured() then
+                    print("REJECTED: configure protection zone first with defense protect <x> <z> <radius>.")
+                    return
+                end
+                defense.auto = true
+                print("[DEFENSE] Automatic engagement ENABLED")
+            elseif value == "off" then
+                defense.auto = false
+                print("[DEFENSE] Automatic engagement DISABLED")
+            else
+                print("Usage: defense auto on|off")
+            end
+        elseif sub == "status" then
+            printDefenseStatus()
+        else
+            print("Usage: defense protect <x> <z> <radius> | defense auto on|off | defense status")
+        end
+    elseif command == "engagements" then
+        printEngagements()
     elseif command == "sync" then
         if syncRepository() then reconcileAll(true) end
     elseif command == "info" then
@@ -1220,6 +1555,7 @@ modem.open(OP_PORT)
 event.listen("modem_message", onModemMessage)
 local deploymentTimer = event.timer(1, checkDeploymentTimeouts, math.huge)
 local statusTimer = event.timer(STATUS_INTERVAL, pollRuntimeStatus, math.huge)
+local defenseTimer = event.timer(1, defenseTick, math.huge)
 
 loadPayloadCatalog()
 printHeader()
@@ -1235,6 +1571,8 @@ while running do
     if now() - lastPrune >= PRUNE_INTERVAL then pruneSeen() end
 end
 
+defense.auto = false
+event.cancel(defenseTimer)
 event.cancel(statusTimer)
 event.cancel(deploymentTimer)
 event.ignore("modem_message", onModemMessage)
