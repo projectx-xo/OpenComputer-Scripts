@@ -6,12 +6,17 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
+local PROTOCOL = 2
+local CENTRAL_ID = "CENTRAL"
+local DEFAULT_TTL = 6
+local SEEN_TTL = 30
+local PRUNE_INTERVAL = 10
+
 local BASE_URL = "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/"
 local SCRIPT_PATH = "/home/stratcom/central.lua"
 local TMP_VERSION = "/tmp/stratcom-central-version.txt"
 local TMP_SCRIPT = "/tmp/stratcom-central.lua"
-
 local REPOSITORY_DIR = "/home/stratcom/repository"
 local MANIFEST_PATH = REPOSITORY_DIR .. "/manifest.lua"
 local TMP_MANIFEST = "/tmp/stratcom-runtime-manifest.lua"
@@ -116,6 +121,9 @@ local modem = component.proxy(modemAddress)
 local nodes = {}
 local desiredRuntimes = {}
 local running = true
+local messageCounter = 0
+local seenMessages = {}
+local lastPrune = 0
 
 local function now()
     return computer.uptime()
@@ -154,6 +162,57 @@ local function readAll(path)
     return data
 end
 
+local function nextMessageId()
+    messageCounter = messageCounter + 1
+    return table.concat({
+        CENTRAL_ID,
+        tostring(math.floor(now() * 1000)),
+        tostring(messageCounter),
+        tostring(math.random(100000, 999999)),
+    }, "-")
+end
+
+local function pruneSeen()
+    local cutoff = now() - SEEN_TTL
+    for id, timestamp in pairs(seenMessages) do
+        if timestamp < cutoff then seenMessages[id] = nil end
+    end
+    lastPrune = now()
+end
+
+local function validEnvelope(envelope)
+    return type(envelope) == "table"
+        and envelope.protocol == PROTOCOL
+        and type(envelope.id) == "string"
+        and type(envelope.source) == "string"
+        and type(envelope.destination) == "string"
+        and type(envelope.kind) == "string"
+        and type(envelope.ttl) == "number"
+        and type(envelope.payload) == "table"
+end
+
+local function transmitEnvelope(port, envelope)
+    local ok, encoded = pcall(serialization.serialize, envelope)
+    if not ok then return false end
+    modem.broadcast(port, "STRATCOM_NET", encoded)
+    return true
+end
+
+local function originate(port, destination, kind, payload, ttl)
+    local envelope = {
+        protocol = PROTOCOL,
+        id = nextMessageId(),
+        source = CENTRAL_ID,
+        destination = string.upper(tostring(destination)),
+        ttl = tonumber(ttl) or DEFAULT_TTL,
+        kind = tostring(kind),
+        payload = payload or {},
+    }
+
+    seenMessages[envelope.id] = now()
+    return transmitEnvelope(port, envelope)
+end
+
 local function syncRepository()
     print("[REPO] Syncing runtime repository from GitHub...")
 
@@ -179,6 +238,7 @@ local function syncRepository()
         return false
     end
 
+    desiredRuntimes = {}
     local loaded = {}
 
     for role, entry in pairs(manifest.roles) do
@@ -211,12 +271,7 @@ local function syncRepository()
                     version = tostring(entry.version),
                     path = localPath,
                 }
-                print(
-                    "[REPO] "
-                        .. tostring(role)
-                        .. " -> "
-                        .. tostring(entry.version)
-                )
+                print("[REPO] " .. tostring(role) .. " -> " .. tostring(entry.version))
             end
         end
     end
@@ -225,25 +280,16 @@ local function syncRepository()
 end
 
 local function sendMgmt(node, command, ...)
-    if not node or not node.address then return false end
-    modem.send(node.address, MGMT_PORT, "MGMT", command, ...)
-    return true
+    if not node then return false end
+    return originate(MGMT_PORT, node.id, "MGMT", {command, ...})
 end
 
 local function sendOperational(node, command, ...)
-    if not node or not node.address or not nodeOnline(node) then return false end
-    modem.send(node.address, OP_PORT, "CMD", command, ...)
-    return true
+    if not node or not nodeOnline(node) then return false end
+    return originate(OP_PORT, node.id, "CMD", {command, ...})
 end
 
-local function registerNode(
-    address,
-    id,
-    role,
-    bootstrapVersion,
-    runtimeVersion,
-    runtimeState
-)
+local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeState)
     if not id then return nil end
 
     id = string.upper(tostring(id))
@@ -261,7 +307,6 @@ local function registerNode(
         discovered = true
     end
 
-    node.address = address
     node.role = tostring(role or node.role or "unknown")
     node.bootstrapVersion = tostring(bootstrapVersion or node.bootstrapVersion or "unknown")
     node.runtimeVersion = tostring(runtimeVersion or node.runtimeVersion or "none")
@@ -270,13 +315,7 @@ local function registerNode(
 
     if discovered then
         print("")
-        print(
-            "[NET] Bootstrap discovered: "
-                .. id
-                .. " ("
-                .. node.role
-                .. ")"
-        )
+        print("[NET] Bootstrap discovered: " .. id .. " (" .. node.role .. ")")
     end
 
     if not node.claimed then
@@ -305,13 +344,8 @@ local function deployNode(node)
     node.deploying = true
 
     print(
-        "[DEPLOY] "
-            .. node.id
-            .. " <- "
-            .. desired.version
-            .. " ("
-            .. totalChunks
-            .. " chunks)"
+        "[DEPLOY] " .. node.id .. " <- " .. desired.version
+            .. " (" .. totalChunks .. " chunks)"
     )
 
     sendMgmt(node, "DEPLOY_BEGIN", desired.version, totalChunks)
@@ -337,7 +371,6 @@ local function reconcileNode(node, force)
 
     node.lastReconcile = now()
     local desired = desiredRuntimes[node.role]
-
     if not desired then return end
 
     if tostring(node.runtimeVersion) ~= tostring(desired.version) then
@@ -375,32 +408,31 @@ local function applyRuntimeStatus(node, status)
     node.lastStatus = now()
 end
 
-local function handleMgmtMessage(remoteAddress, messageType, ...)
-    local args = {...}
+local function handleMgmtEnvelope(envelope)
+    local source = string.upper(envelope.source)
+    local payload = envelope.payload
 
-    if messageType == "BOOT_HELLO" or messageType == "BOOT_HEARTBEAT" then
+    if envelope.kind == "BOOT_HELLO" or envelope.kind == "BOOT_HEARTBEAT" then
         local node = registerNode(
-            remoteAddress,
-            args[1],
-            args[2],
-            args[3],
-            args[4],
-            args[5]
+            source,
+            payload[2],
+            payload[3],
+            payload[4],
+            payload[5]
         )
 
         if node and node.claimed then reconcileNode(node, false) end
         return
     end
 
-    local node = getNode(args[1])
+    local node = getNode(source)
     if not node then return end
-    node.address = remoteAddress
     node.lastSeen = now()
 
-    if messageType == "MGMT_ACK" then
-        local command = tostring(args[2])
-        local success = args[3]
-        local detail = args[4]
+    if envelope.kind == "MGMT_ACK" then
+        local command = tostring(payload[1])
+        local success = payload[2]
+        local detail = payload[3]
 
         if command == "CLAIM" and success then
             node.claimed = true
@@ -416,10 +448,10 @@ local function handleMgmtMessage(remoteAddress, messageType, ...)
             if success then node.runtimeState = "running" end
             print("[MGMT] " .. node.id .. " RESTART -> " .. tostring(success) .. " " .. tostring(detail or ""))
         end
-    elseif messageType == "MGMT_DEPLOY_RESULT" then
-        local success = args[2]
-        local version = tostring(args[3] or "unknown")
-        local detail = args[4]
+    elseif envelope.kind == "MGMT_DEPLOY_RESULT" then
+        local success = payload[1]
+        local version = tostring(payload[2] or "unknown")
+        local detail = payload[3]
         node.deploying = false
 
         if success then
@@ -430,18 +462,14 @@ local function handleMgmtMessage(remoteAddress, messageType, ...)
         else
             print("[DEPLOY] " .. node.id .. " FAILED: " .. tostring(detail))
         end
-    elseif messageType == "MGMT_ERROR" then
+    elseif envelope.kind == "MGMT_ERROR" then
         node.deploying = false
         print(
-            "[MGMT ERROR] "
-                .. node.id
-                .. " "
-                .. tostring(args[2])
-                .. ": "
-                .. tostring(args[3])
+            "[MGMT ERROR] " .. node.id .. " "
+                .. tostring(payload[1]) .. ": " .. tostring(payload[2])
         )
-    elseif messageType == "BOOT_INFO" then
-        local ok, info = pcall(serialization.unserialize, args[2])
+    elseif envelope.kind == "BOOT_INFO" then
+        local ok, info = pcall(serialization.unserialize, payload[1])
         if ok and type(info) == "table" then
             node.bootstrapVersion = info.bootstrapVersion or node.bootstrapVersion
             node.runtimeVersion = info.runtimeVersion or node.runtimeVersion
@@ -450,59 +478,68 @@ local function handleMgmtMessage(remoteAddress, messageType, ...)
     end
 end
 
-local function handleRuntimeMessage(remoteAddress, ...)
-    local args = {...}
-    local node = getNode(args[1])
-    if not node or remoteAddress ~= node.address then return end
+local function handleRuntimeEnvelope(envelope)
+    local node = getNode(envelope.source)
+    if not node then return end
 
-    local responseType = tostring(args[2] or "")
+    local payload = envelope.payload
+    local responseType = tostring(payload[1] or "")
     node.lastSeen = now()
 
     if responseType == "STATUS" then
-        local ok, status = pcall(serialization.unserialize, args[3])
+        local ok, status = pcall(serialization.unserialize, payload[2])
         if ok and type(status) == "table" then
             applyRuntimeStatus(node, status)
         else
             print("[RUNTIME ERROR] Invalid status from " .. node.id)
         end
     elseif responseType == "ACK" then
-        print(
-            "[ACK] "
-                .. node.id
-                .. " "
-                .. tostring(args[3])
-                .. " -> "
-                .. tostring(args[4])
-        )
+        print("[ACK] " .. node.id .. " " .. tostring(payload[2]) .. " -> " .. tostring(payload[3]))
     elseif responseType == "ERROR" then
-        print("[ERROR] " .. node.id .. ": " .. tostring(args[3]))
+        print("[ERROR] " .. node.id .. ": " .. tostring(payload[2]))
     elseif responseType == "LAUNCH_RESULT" then
         print(
-            "[LAUNCH] "
-                .. node.id
-                .. " success="
-                .. tostring(args[3])
-                .. " X="
-                .. tostring(args[4])
-                .. " Z="
-                .. tostring(args[5])
+            "[LAUNCH] " .. node.id
+                .. " success=" .. tostring(payload[2])
+                .. " X=" .. tostring(payload[3])
+                .. " Z=" .. tostring(payload[4])
         )
     elseif responseType == "PONG" then
         print("[NET] PONG <- " .. node.id)
     end
 end
 
-local function onModemMessage(_, _, remoteAddress, port, _, messageType, ...)
+local function handleEnvelope(port, envelope)
+    if not validEnvelope(envelope) then return end
+    if seenMessages[envelope.id] then return end
+    seenMessages[envelope.id] = now()
+
+    if string.upper(envelope.destination) ~= CENTRAL_ID
+        and envelope.destination ~= "*"
+    then
+        return
+    end
+
     if port == MGMT_PORT then
-        handleMgmtMessage(remoteAddress, messageType, ...)
-    elseif port == OP_PORT and messageType == "RUNTIME" then
-        handleRuntimeMessage(remoteAddress, ...)
+        handleMgmtEnvelope(envelope)
+    elseif port == OP_PORT and envelope.kind == "RUNTIME" then
+        handleRuntimeEnvelope(envelope)
     end
 end
 
+local function onModemMessage(_, _, _, port, _, marker, encoded)
+    if (port ~= MGMT_PORT and port ~= OP_PORT) or marker ~= "STRATCOM_NET" then
+        return
+    end
+
+    local ok, envelope = pcall(serialization.unserialize, encoded)
+    if not ok then return end
+    handleEnvelope(port, envelope)
+end
+
 local function discover()
-    print("[NET] Broadcasting bootstrap discovery...")
-    modem.broadcast(MGMT_PORT, "MGMT", "DISCOVER")
+    print("[NET] Broadcasting mesh discovery...")
+    originate(MGMT_PORT, "*", "MGMT", {"DISCOVER"})
 end
 
 local function printHeader()
@@ -513,6 +550,7 @@ local function printHeader()
     print("Version:      " .. VERSION)
     print("Mgmt port:    " .. MGMT_PORT)
     print("Op port:      " .. OP_PORT)
+    print("Mesh:         protocol " .. PROTOCOL .. " / TTL " .. DEFAULT_TTL)
     print("")
 end
 
@@ -537,7 +575,7 @@ local function printNodes()
         )
     end
 
-    if not found then print("No bootstrap nodes discovered.") end
+    if not found then print("No mesh bootstrap nodes discovered.") end
     print("")
 end
 
@@ -570,7 +608,7 @@ local function printStatus(node)
     end
 
     if node.lastSeen then
-        print("Last seen:    " .. string.format("%.1fs ago", now() - node.lastSeen))
+        print("Last seen:   " .. string.format("%.1fs ago", now() - node.lastSeen))
     end
 
     print("----------------------------------------")
@@ -708,6 +746,10 @@ while running do
     io.write("STRATCOM> ")
     local line = io.read()
     if line then execute(line) end
+
+    if now() - lastPrune >= PRUNE_INTERVAL then
+        pruneSeen()
+    end
 end
 
 event.ignore("modem_message", onModemMessage)
