@@ -2,7 +2,7 @@ return {
     protocol = 1,
     roles = {
         defense = {
-            version = "2.0.1",
+            version = "2.0.2",
             path = "runtime/launchpad.lua",
         },
         strike = {
