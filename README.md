@@ -2,9 +2,11 @@
 
 STRATCOM command-and-control software for OpenComputers + HBM Nuclear Tech.
 
-## v2 architecture
+## v2.1 architecture
 
 Central is authoritative. Field nodes do **not** download runtime software from GitHub and do not decide when to start/update it.
+
+STRATCOM 2.1 adds automatic multi-hop wireless routing. A field node no longer needs a direct radio path to CENTCOM as long as another 2.1+ bootstrap can hear both sides.
 
 ```text
 GitHub
@@ -12,14 +14,15 @@ GitHub
   v
 CENTRAL STRATCOM
   |
-  | management 4510
-  | operations 4511
+  | wireless mesh
   v
-NODE BOOTSTRAPS
-  |
-  v
-centrally deployed role runtime
+ABM-A1  <---->  SILO-S1  <---->  RADAR-1
+  |                 |
+  v                 v
+runtime           runtime
 ```
+
+Management traffic uses port `4510`; operational traffic uses port `4511`. Both ports carry serialized `STRATCOM_NET` envelopes with logical source/destination node IDs, a message ID, and a bounded TTL. Each bootstrap forwards an unseen envelope once, so loops are suppressed automatically.
 
 ## Repository layout
 
@@ -66,6 +69,7 @@ return {
     managementPort = 4510,
     operationalPort = 4511,
     heartbeatInterval = 5,
+    meshTtl = 6,
 }
 ```
 
@@ -78,13 +82,14 @@ return {
     managementPort = 4510,
     operationalPort = 4511,
     heartbeatInterval = 5,
+    meshTtl = 6,
 }
 ```
 
-Install the permanent bootstrap once:
+Install/update the permanent bootstrap:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/bootstrap/bootstrap.lua?install=200" /home/stratcom/bootstrap.lua
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/bootstrap/bootstrap.lua?install=210" /home/stratcom/bootstrap.lua
 ```
 
 Start it:
@@ -93,7 +98,13 @@ Start it:
 lua /home/stratcom/bootstrap.lua
 ```
 
-The node should display `Waiting for central command...`. Do not install or run `runtime/launchpad.lua` manually. Central deploys and starts it.
+The header should show `Bootstrap: 2.1.0` and `Mesh: protocol 2 / TTL 6`. Do not install or run `runtime/launchpad.lua` manually. Central deploys and starts it.
+
+## Important v2.1 mesh migration
+
+Every computer that must **relay** traffic needs bootstrap `2.1.0` or newer. For the SILO-S1-through-ABM-A1 topology, update both `ABM-A1` and `SILO-S1` to bootstrap 2.1.0 before testing discovery.
+
+Existing runtime `2.0.0` is compatible and does not need to be manually reinstalled.
 
 ## Central installation
 
@@ -101,20 +112,23 @@ Central requires an Internet Card because it is the only machine that syncs runt
 
 ```sh
 mkdir /home/stratcom
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/central.lua?install=200" /home/stratcom/central.lua
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/central.lua?install=210" /home/stratcom/central.lua
 lua /home/stratcom/central.lua
 ```
+
+The header should show `Version: 2.1.0` and `Mesh: protocol 2 / TTL 6`.
 
 On startup central:
 
 1. checks for central-program updates;
 2. downloads `runtime/manifest.lua`;
 3. caches the desired runtime for each role;
-4. discovers bootstrap nodes;
-5. claims each node;
-6. compares installed runtime version to the desired version;
-7. automatically deploys missing/outdated runtime software;
-8. starts the runtime.
+4. broadcasts mesh discovery;
+5. discovers nodes directly or through relays;
+6. claims each node by logical node ID;
+7. compares installed runtime version to the desired version;
+8. automatically deploys missing/outdated runtime software through the mesh;
+9. starts the runtime.
 
 ## Central commands
 
@@ -138,6 +152,30 @@ clear
 quit
 ```
 
+## Mesh protocol
+
+Wire format on both modem ports:
+
+```text
+STRATCOM_NET | <serialized envelope>
+```
+
+Envelope fields:
+
+```lua
+{
+    protocol = 2,
+    id = "unique-message-id",
+    source = "CENTRAL" or "SILO-S1",
+    destination = "CENTRAL" or node id or "*",
+    ttl = 6,
+    kind = "MGMT" or "CMD" or response type,
+    payload = { ... },
+}
+```
+
+Bootstraps keep a short-lived cache of message IDs. Packets already seen are dropped; unseen packets not addressed to the local node are rebroadcast with TTL reduced by one. This allows automatic relay without configuring static routes.
+
 ## Runtime repository
 
 `runtime/manifest.lua` declares the desired role software version. Current roles:
@@ -149,21 +187,22 @@ Changing a role's version in the manifest causes central to deploy that version 
 
 ## Deployment safety
 
-- Bootstrap accepts management/operational commands only from the central modem address that claimed it.
-- Runtime is transferred in chunks over OpenComputers modem networking.
+- Bootstrap accepts management/operational execution only when the logical source is `CENTRAL`.
+- Commands are addressed to a logical node ID, not a modem hardware address.
+- Runtime is transferred in chunks over the mesh.
 - Bootstrap validates incoming Lua with `loadfile` before installation.
 - The previous runtime is retained as `runtime/previous.lua`.
 - A failed validation does not replace the current runtime.
 - Launch runtime requires `ARM` before `LAUNCH` and disarms after a successful launch.
 
-## Migrating from v1 nodes
+## Migrating from v1/v2.0 nodes
 
 On each existing `ABM-A1`, `SILO-S1`, etc.:
 
-1. stop/reboot the old `node.lua`;
-2. keep or replace `/home/stratcom/config.lua` using the v2 format above;
-3. download `bootstrap/bootstrap.lua`;
+1. stop/reboot the old program;
+2. keep `/home/stratcom/config.lua` (the legacy `port = 4510` form is still accepted);
+3. download bootstrap 2.1.0 using the command above;
 4. run `lua /home/stratcom/bootstrap.lua`;
-5. do not start `node.lua` again.
+5. do not start legacy `node.lua` again.
 
-After bootstrap is running, central owns runtime installation and lifecycle.
+After bootstrap is running, central owns runtime installation and lifecycle. Bootstrap updates remain deliberate/manual because bootstrap is the recovery/control layer itself.
