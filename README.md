@@ -1,49 +1,60 @@
 # OpenComputer Scripts
 
-OpenComputers scripts for an HBM Nuclear Tech command-and-control network.
+STRATCOM command-and-control software for OpenComputers + HBM Nuclear Tech.
 
-## Layout
+## v2 architecture
 
-- `node/node.lua` — reusable field-node daemon for defense and strike launch-pad sites
-- `node/config.example.lua` — example persistent defense-site configuration
-- `node/config.strike.example.lua` — example persistent strike-site configuration
-- `node/version.txt` — node release version used by the self-updater
-- `central/central.lua` — central STRATCOM command console
-- `central/version.txt` — central release version used by the self-updater
+Central is authoritative. Field nodes do **not** download runtime software from GitHub and do not decide when to start/update it.
 
-## Network protocol
+```text
+GitHub
+  |
+  v
+CENTRAL STRATCOM
+  |
+  | management 4510
+  | operations 4511
+  v
+NODE BOOTSTRAPS
+  |
+  v
+centrally deployed role runtime
+```
 
-Port: `4510`
+## Repository layout
 
-Field nodes support:
+```text
+bootstrap/
+├── bootstrap.lua
+├── config.example.lua
+└── version.txt
 
-- `PING`
-- `STATUS`
-- `IDENTIFY`
-- `ARM`
-- `DISARM`
-- `LAUNCH <x> <z>`
-- `SHUTDOWN_NODE`
+runtime/
+├── manifest.lua
+└── launchpad.lua
 
-Nodes broadcast `HELLO` on startup and `HEARTBEAT` every 5 seconds. Central automatically requests full status on discovery and refreshes full status periodically.
+central/
+├── central.lua
+└── version.txt
+```
 
-## Field node install
+The old `node/` directory is the legacy v1 agent and should not be used for new v2 nodes.
 
-Create the persistent site config first:
+## Field node installation
+
+A field computer needs:
+
+- OpenOS
+- modem / wireless network card
+- HBM launch pad exposed as `ntm_launch_pad`
+- Inventory Controller Upgrade if exact missile-name detection is desired
+- **No Internet Card is required on the node**
+
+Create the node configuration:
 
 ```sh
 mkdir /home/stratcom
 edit /home/stratcom/config.lua
-```
-
-Defense example:
-
-```lua
-return {
-    id = "ABM-A1",
-    role = "defense",
-    port = 4510,
-}
 ```
 
 Strike example:
@@ -52,45 +63,72 @@ Strike example:
 return {
     id = "SILO-S1",
     role = "strike",
-    port = 4510,
+    managementPort = 4510,
+    operationalPort = 4511,
+    heartbeatInterval = 5,
 }
 ```
 
-Then install the reusable node program:
+Defense example:
 
-```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/node.lua?install=1" /home/stratcom/node.lua
-lua /home/stratcom/node.lua
+```lua
+return {
+    id = "ABM-A1",
+    role = "defense",
+    managementPort = 4510,
+    operationalPort = 4511,
+    heartbeatInterval = 5,
+}
 ```
 
-The config file is never replaced by software updates, so the same `node.lua` can be deployed to every launch site.
+Install the permanent bootstrap once:
 
-## Exact missile detection
+```sh
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/bootstrap/bootstrap.lua?install=200" /home/stratcom/bootstrap.lua
+```
 
-If a field node has an OpenComputers **Inventory Controller Upgrade** attached through the Adapter, `node.lua` automatically scans sides 0-5 for the HBM launch pad's 7-slot inventory and reads slot 1.
+Start it:
 
-The full status packet then includes:
+```sh
+lua /home/stratcom/bootstrap.lua
+```
 
-- exact item ID, e.g. `hbm:item.missile_drill`
-- display label, e.g. `The Concrete Cracker`
-- stack count
+The node should display `Waiting for central command...`. Do not install or run `runtime/launchpad.lua` manually. Central deploys and starts it.
 
-Central displays the missile label in `nodes` and shows both label and item ID in `status <node>`.
+## Central installation
 
-## Central install
+Central requires an Internet Card because it is the only machine that syncs runtime software from GitHub.
 
 ```sh
 mkdir /home/stratcom
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/central.lua?install=1" /home/stratcom/central.lua
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/central.lua?install=200" /home/stratcom/central.lua
 lua /home/stratcom/central.lua
 ```
 
-Central commands:
+On startup central:
+
+1. checks for central-program updates;
+2. downloads `runtime/manifest.lua`;
+3. caches the desired runtime for each role;
+4. discovers bootstrap nodes;
+5. claims each node;
+6. compares installed runtime version to the desired version;
+7. automatically deploys missing/outdated runtime software;
+8. starts the runtime.
+
+## Central commands
 
 ```text
 help
 discover
 nodes
+info SILO-S1
+sync
+deploy SILO-S1
+deploy all
+start SILO-S1
+stop SILO-S1
+restart SILO-S1
 status SILO-S1
 ping SILO-S1
 arm SILO-S1
@@ -100,19 +138,32 @@ clear
 quit
 ```
 
-## Automatic GitHub updates
+## Runtime repository
 
-Both programs check their matching `version.txt` on GitHub at startup. The updater appends cache-busting query parameters to raw GitHub requests. If a newer semantic version is available, it downloads the replacement script, keeps a `.bak` copy, installs the update, and reboots the OpenComputers machine.
+`runtime/manifest.lua` declares the desired role software version. Current roles:
 
-Automatic GitHub checks require an OpenComputers **Internet Card** and internet access enabled in the OpenComputers configuration. If GitHub cannot be reached, the installed version continues normally.
+- `defense` -> `runtime/launchpad.lua`
+- `strike` -> `runtime/launchpad.lua`
 
-Updates are startup-only so a field node will not reboot itself unexpectedly while running.
+Changing a role's version in the manifest causes central to deploy that version to nodes when they connect/reconcile.
 
-## HBM integration
+## Deployment safety
 
-The field-node implementation expects:
+- Bootstrap accepts management/operational commands only from the central modem address that claimed it.
+- Runtime is transferred in chunks over OpenComputers modem networking.
+- Bootstrap validates incoming Lua with `loadfile` before installation.
+- The previous runtime is retained as `runtime/previous.lua`.
+- A failed validation does not replace the current runtime.
+- Launch runtime requires `ARM` before `LAUNCH` and disarms after a successful launch.
 
-- an HBM component exposed as `ntm_launch_pad`
-- an OpenComputers modem
-- an Inventory Controller Upgrade for exact loaded-missile detection
-- an OpenComputers Internet Card only if that node should self-update directly from GitHub
+## Migrating from v1 nodes
+
+On each existing `ABM-A1`, `SILO-S1`, etc.:
+
+1. stop/reboot the old `node.lua`;
+2. keep or replace `/home/stratcom/config.lua` using the v2 format above;
+3. download `bootstrap/bootstrap.lua`;
+4. run `lua /home/stratcom/bootstrap.lua`;
+5. do not start `node.lua` again.
+
+After bootstrap is running, central owns runtime installation and lifecycle.
