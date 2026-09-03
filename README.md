@@ -4,8 +4,9 @@ OpenComputers scripts for an HBM Nuclear Tech command-and-control network.
 
 ## Layout
 
-- `node/node.lua` — reusable field-node daemon for launch-pad sites such as `ABM-A1`
-- `node/config.example.lua` — example persistent site configuration
+- `node/node.lua` — reusable field-node daemon for defense and strike launch-pad sites
+- `node/config.example.lua` — example persistent defense-site configuration
+- `node/config.strike.example.lua` — example persistent strike-site configuration
 - `node/version.txt` — node release version used by the self-updater
 - `central/central.lua` — central STRATCOM command console
 - `central/version.txt` — central release version used by the self-updater
@@ -24,7 +25,7 @@ Field nodes support:
 - `LAUNCH <x> <z>`
 - `SHUTDOWN_NODE`
 
-Nodes broadcast `HELLO` on startup and `HEARTBEAT` every 5 seconds. Central automatically requests a full `STATUS` packet when it discovers a new node.
+Nodes broadcast `HELLO` on startup and `HEARTBEAT` every 5 seconds. Central automatically requests full status on discovery and refreshes full status periodically.
 
 ## Field node install
 
@@ -35,7 +36,7 @@ mkdir /home/stratcom
 edit /home/stratcom/config.lua
 ```
 
-Example for the first ABM site:
+Defense example:
 
 ```lua
 return {
@@ -45,20 +46,42 @@ return {
 }
 ```
 
+Strike example:
+
+```lua
+return {
+    id = "SILO-S1",
+    role = "strike",
+    port = 4510,
+}
+```
+
 Then install the reusable node program:
 
 ```sh
-wget -f https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/node.lua /home/stratcom/node.lua
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/node/node.lua?install=1" /home/stratcom/node.lua
 lua /home/stratcom/node.lua
 ```
 
-The config file is never replaced by software updates, so the same `node.lua` can be deployed to every site.
+The config file is never replaced by software updates, so the same `node.lua` can be deployed to every launch site.
+
+## Exact missile detection
+
+If a field node has an OpenComputers **Inventory Controller Upgrade** attached through the Adapter, `node.lua` automatically scans sides 0-5 for the HBM launch pad's 7-slot inventory and reads slot 1.
+
+The full status packet then includes:
+
+- exact item ID, e.g. `hbm:item.missile_drill`
+- display label, e.g. `The Concrete Cracker`
+- stack count
+
+Central displays the missile label in `nodes` and shows both label and item ID in `status <node>`.
 
 ## Central install
 
 ```sh
 mkdir /home/stratcom
-wget -f https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/central.lua /home/stratcom/central.lua
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/central/central.lua?install=1" /home/stratcom/central.lua
 lua /home/stratcom/central.lua
 ```
 
@@ -68,18 +91,18 @@ Central commands:
 help
 discover
 nodes
-status ABM-A1
-ping ABM-A1
-arm ABM-A1
-disarm ABM-A1
-launch ABM-A1 500 -250
+status SILO-S1
+ping SILO-S1
+arm SILO-S1
+disarm SILO-S1
+launch SILO-S1 500 -250
 clear
 quit
 ```
 
 ## Automatic GitHub updates
 
-Both `node.lua` and `central.lua` check their matching `version.txt` on GitHub at startup. If a newer semantic version is available, the program downloads the replacement script, keeps a `.bak` copy of the previous script, installs the update, and reboots the OpenComputers machine.
+Both programs check their matching `version.txt` on GitHub at startup. The updater appends cache-busting query parameters to raw GitHub requests. If a newer semantic version is available, it downloads the replacement script, keeps a `.bak` copy, installs the update, and reboots the OpenComputers machine.
 
 Automatic GitHub checks require an OpenComputers **Internet Card** and internet access enabled in the OpenComputers configuration. If GitHub cannot be reached, the installed version continues normally.
 
@@ -87,8 +110,9 @@ Updates are startup-only so a field node will not reboot itself unexpectedly whi
 
 ## HBM integration
 
-The current field-node implementation expects:
+The field-node implementation expects:
 
 - an HBM component exposed as `ntm_launch_pad`
 - an OpenComputers modem
+- an Inventory Controller Upgrade for exact loaded-missile detection
 - an OpenComputers Internet Card only if that node should self-update directly from GitHub
