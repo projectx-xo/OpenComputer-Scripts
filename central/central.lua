@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.4.0"
+local VERSION = "2.4.1"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -34,7 +34,7 @@ local RADAR_TRACK_STALE_AFTER = 10
 
 local ABM_NODE_ID = "ABM-A1"
 local ABM_MISSILE_ID = "hbm:item.missile_anti-ballistic"
-local DEFENSE_CONFIRM_SAMPLES = 2
+local DEFENSE_CONFIRM_SAMPLES = 3
 local DEFENSE_MAX_TCA = 120
 local DEFENSE_LEAD_SECONDS = 2
 local DEFENSE_POST_LAUNCH_TIMEOUT = 8
@@ -1275,7 +1275,7 @@ local function printDefenseStatus()
     print("ABM ready:     " .. tostring(ready) .. (ready and "" or (" (" .. tostring(reason) .. ")")))
     print("ABM missile:   " .. tostring(abm and abm.missileName or "---"))
     print("Active engage: " .. tostring(pendingArm and pendingArm.trackKey or "none"))
-    print("Confirm:       " .. DEFENSE_CONFIRM_SAMPLES .. " radar updates")
+    print("Confirm:       " .. DEFENSE_CONFIRM_SAMPLES .. " qualification passes")
     print("============================================================")
     print("")
 end
