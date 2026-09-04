@@ -6,7 +6,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 
-local VERSION = "2.5.0"
+local VERSION = "2.6.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -46,6 +46,9 @@ local LAUNCH_SITE_MIN_CLIMB = 35
 local LAUNCH_SITE_MIN_DEPARTURE = 40
 local LAUNCH_SITE_CONFIRM_SAMPLES = 2
 local LAUNCH_SITE_MERGE_DISTANCE = 100
+
+local IFF_MATCH_WINDOW = 30
+local IFF_HEADING_TOLERANCE = 30
 
 local VALID_CLASSES = {
     nuclear = true,
@@ -175,6 +178,8 @@ local activeEngagements = {}
 local pendingArm = nil
 local launchSites = {}
 local nextLaunchSiteId = 1
+local friendlyExpectations = {}
+local nextFriendlyExpectationId = 1
 local running = true
 local messageCounter = 0
 local seenMessages = {}
@@ -218,6 +223,11 @@ end
 
 local function getNode(id)
     return nodes[string.upper(id or "")]
+end
+
+local function defenseZoneConfigured()
+    return defense.protectX ~= nil and defense.protectZ ~= nil
+        and defense.radius ~= nil and defense.radius > 0
 end
 
 local function loadPayloadCatalog()
@@ -290,6 +300,140 @@ local function horizontalDistance(x1, z1, x2, z2)
     return math.sqrt(dx * dx + dz * dz)
 end
 
+local function bearingFromDelta(dx, dz)
+    if dx == 0 and dz == 0 then return 0 end
+    local angle = math.deg(math.atan(dx, -dz))
+    if angle < 0 then angle = angle + 360 end
+    return angle
+end
+
+local function angleDifference(a, b)
+    local diff = math.abs((tonumber(a) or 0) - (tonumber(b) or 0)) % 360
+    if diff > 180 then diff = 360 - diff end
+    return diff
+end
+
+local function countFriendlyExpectations()
+    local count = 0
+    for _, expectation in pairs(friendlyExpectations) do
+        if expectation.remaining and expectation.remaining > 0 and expectation.deadline >= now() then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function pruneFriendlyExpectations()
+    local timestamp = now()
+    for id, expectation in pairs(friendlyExpectations) do
+        if expectation.remaining <= 0 or timestamp > expectation.deadline then
+            friendlyExpectations[id] = nil
+        end
+    end
+end
+
+local function registerFriendlyExpectation(node, count, targetX, targetZ, mode)
+    if not node or tostring(node.role) ~= "strike" then return nil end
+    if not defenseZoneConfigured() then
+        print("[IFF] No protected region configured; friendly launch cannot be correlated.")
+        return nil
+    end
+
+    count = tonumber(count) or 0
+    if count < 1 then return nil end
+    targetX = tonumber(targetX)
+    targetZ = tonumber(targetZ)
+    if not targetX or not targetZ then return nil end
+
+    local id = nextFriendlyExpectationId
+    nextFriendlyExpectationId = nextFriendlyExpectationId + 1
+    local created = now()
+    local expectation = {
+        id = id,
+        source = node.id,
+        mode = tostring(mode or "launch"),
+        createdAt = created,
+        deadline = created + IFF_MATCH_WINDOW,
+        targetX = targetX,
+        targetZ = targetZ,
+        targetBearing = bearingFromDelta(targetX - defense.protectX, targetZ - defense.protectZ),
+        expected = count,
+        remaining = count,
+    }
+    friendlyExpectations[id] = expectation
+    print("[IFF] Registered friendly " .. expectation.mode .. " from " .. node.id
+        .. " count=" .. tostring(count)
+        .. " target=" .. tostring(targetX) .. "," .. tostring(targetZ)
+        .. " window=" .. tostring(IFF_MATCH_WINDOW) .. "s")
+    return expectation
+end
+
+local function trackOriginInsideProtectedRegion(track)
+    if not defenseZoneConfigured() or not track then return false end
+    if track.firstX == nil or track.firstZ == nil then return false end
+    return horizontalDistance(defense.protectX, defense.protectZ, track.firstX, track.firstZ) <= defense.radius
+end
+
+local function trackMovingOutward(track)
+    if not defenseZoneConfigured() or not track then return false end
+    local x = tonumber(track.x)
+    local z = tonumber(track.z)
+    local vx = tonumber(track.vx) or 0
+    local vz = tonumber(track.vz) or 0
+    if not x or not z then return false end
+    local rx = x - defense.protectX
+    local rz = z - defense.protectZ
+    return (rx * vx + rz * vz) > 0
+end
+
+local function tryMatchFriendlyTrack(track)
+    if not track or track.friendly == true then return track and true or false end
+    local typeId = tonumber(track.typeId)
+    if typeId == nil or typeId < 0 or typeId > 9 then return false end
+    if not trackOriginInsideProtectedRegion(track) then return false end
+    if not trackMovingOutward(track) then return false end
+
+    pruneFriendlyExpectations()
+    local timestamp = now()
+    local trackHeading = tonumber(track.heading) or bearingFromDelta(track.vx or 0, track.vz or 0)
+    local best = nil
+    local bestAngle = nil
+
+    for _, expectation in pairs(friendlyExpectations) do
+        if expectation.remaining > 0
+            and timestamp >= expectation.createdAt
+            and timestamp <= expectation.deadline
+        then
+            local diff = angleDifference(trackHeading, expectation.targetBearing)
+            if diff <= IFF_HEADING_TOLERANCE and (not bestAngle or diff < bestAngle) then
+                best = expectation
+                bestAngle = diff
+            end
+        end
+    end
+
+    if not best then return false end
+
+    best.remaining = best.remaining - 1
+    track.friendly = true
+    track.iffState = "FRIENDLY_OUTBOUND"
+    track.friendlySource = best.source
+    track.friendlyTargetX = best.targetX
+    track.friendlyTargetZ = best.targetZ
+    track.friendlyExpectationId = best.id
+    track.friendlyMatchedAt = timestamp
+    track.threatSamples = 0
+    track.launchSiteSamples = 0
+
+    print("[IFF] " .. track.key .. " FRIENDLY_OUTBOUND"
+        .. " source=" .. tostring(best.source)
+        .. " target=" .. tostring(best.targetX) .. "," .. tostring(best.targetZ)
+        .. " headingError=" .. string.format("%.1f", bestAngle))
+
+    if best.remaining <= 0 then friendlyExpectations[best.id] = nil end
+    return true
+end
+
 local function recordLaunchSite(track)
     if not track or track.firstX == nil or track.firstZ == nil then return nil end
 
@@ -343,7 +487,7 @@ local function recordLaunchSite(track)
 end
 
 local function evaluateLaunchSiteCandidate(track)
-    if not track or track.launchSitePromoted then return end
+    if not track or track.launchSitePromoted or track.friendly == true then return end
     local typeId = tonumber(track.typeId)
     if typeId == nil or typeId < 0 or typeId > 9 then return end
     if track.firstY == nil or track.firstY > LAUNCH_SITE_MAX_ACQUIRE_Y then return end
@@ -668,6 +812,13 @@ local function applyRadarTrack(node, track)
         firstZ = previous and previous.firstZ or tonumber(track.z),
         launchSiteSamples = previous and previous.launchSiteSamples or 0,
         launchSitePromoted = previous and previous.launchSitePromoted or false,
+        friendly = previous and previous.friendly or false,
+        iffState = previous and previous.iffState or nil,
+        friendlySource = previous and previous.friendlySource or nil,
+        friendlyTargetX = previous and previous.friendlyTargetX or nil,
+        friendlyTargetZ = previous and previous.friendlyTargetZ or nil,
+        friendlyExpectationId = previous and previous.friendlyExpectationId or nil,
+        friendlyMatchedAt = previous and previous.friendlyMatchedAt or nil,
     }
     return radarTracks[key]
 end
@@ -723,11 +874,6 @@ local function applyRuntimeStatus(node, status)
     node.missileCount = status.missileCount
     node.inventorySide = status.inventorySide
     node.lastStatus = now()
-end
-
-local function defenseZoneConfigured()
-    return defense.protectX ~= nil and defense.protectZ ~= nil
-        and defense.radius ~= nil and defense.radius > 0
 end
 
 local function automaticThreatType(track)
@@ -853,6 +999,11 @@ local function createEngagement(track, approach)
 end
 
 local function evaluateTrackForDefense(track)
+    if not track then return end
+    if track.friendly == true then
+        track.threatSamples = 0
+        return
+    end
     if not defense.auto or not defenseZoneConfigured() then
         track.threatSamples = 0
         return
@@ -879,6 +1030,7 @@ local function evaluateTrackForDefense(track)
 end
 
 local function defenseTick()
+    pruneFriendlyExpectations()
     if defense.auto then
         for _, track in pairs(radarTracks) do
             evaluateTrackForDefense(track)
@@ -1028,6 +1180,7 @@ local function handleRadarTrackEvent(node, encoded)
                 .. " @ " .. tostring(saved.x) .. "," .. tostring(saved.y) .. "," .. tostring(saved.z))
         end
         if saved then
+            tryMatchFriendlyTrack(saved)
             evaluateLaunchSiteCandidate(saved)
             evaluateTrackForDefense(saved)
         end
@@ -1143,6 +1296,7 @@ local function printHeader()
     print("Status poll:  " .. STATUS_INTERVAL .. "s")
     print("Strike:       payload-aware")
     print("Radar:        network tracks")
+    print("IFF:          friendly outbound")
     print("Defense:      " .. (defense.auto and "AUTO" or "MANUAL"))
     print("")
 end
@@ -1268,12 +1422,17 @@ local function printTracks(filterNode)
                 pos,
                 track.totalSpeed or 0,
                 hdg,
-                trackState(track)
+                track.friendly and "FRIENDLY" or trackState(track)
             ))
-            local approach = closestApproach(track)
-            if approach and approach.inbound then
-                print("           THREAT closest=" .. string.format("%.1f", approach.closest)
-                    .. " tca=" .. string.format("%.1fs", approach.t))
+            if track.friendly then
+                print("           IFF: FRIENDLY_OUTBOUND source=" .. tostring(track.friendlySource)
+                    .. " target=" .. tostring(track.friendlyTargetX) .. "," .. tostring(track.friendlyTargetZ))
+            else
+                local approach = closestApproach(track)
+                if approach and approach.inbound then
+                    print("           THREAT closest=" .. string.format("%.1f", approach.closest)
+                        .. " tca=" .. string.format("%.1fs", approach.t))
+                end
             end
             if track.isPlayer and track.name then print("           Player: " .. tostring(track.name)) end
             print("           Velocity X=" .. string.format("%+.1f", track.vx or 0)
@@ -1401,6 +1560,8 @@ local function printDefenseStatus()
     print("ABM ready:     " .. tostring(ready) .. (ready and "" or (" (" .. tostring(reason) .. ")")))
     print("ABM missile:   " .. tostring(abm and abm.missileName or "---"))
     print("Active engage: " .. tostring(pendingArm and pendingArm.trackKey or "none"))
+    print("IFF pending:   " .. tostring(countFriendlyExpectations()))
+    print("IFF window:    " .. tostring(IFF_MATCH_WINDOW) .. "s / " .. tostring(IFF_HEADING_TOLERANCE) .. "deg")
     print("Confirm:       " .. DEFENSE_CONFIRM_SAMPLES .. " qualification passes")
     print("============================================================")
     print("")
@@ -1535,7 +1696,8 @@ local function executeStrike(node, class, count, x, z)
         return
     end
 
-    sendOperational(node, "STRIKE", serialization.serialize(plan), serialization.serialize({x = x, z = z}))
+    local sent = sendOperational(node, "STRIKE", serialization.serialize(plan), serialization.serialize({x = x, z = z}))
+    if sent then registerFriendlyExpectation(node, #selected, x, z, "strike") end
 end
 
 local function printHelp()
@@ -1705,7 +1867,8 @@ local function execute(line)
             print("Target: X=" .. x .. " Z=" .. z)
             io.write("Type LAUNCH to confirm: ")
             if io.read() ~= "LAUNCH" then print("Launch cancelled."); return end
-            sendOperational(node, "LAUNCH_SILO", launcher, serialization.serialize({x = x, z = z}))
+            local sent = sendOperational(node, "LAUNCH_SILO", launcher, serialization.serialize({x = x, z = z}))
+            if sent then registerFriendlyExpectation(node, 1, x, z, "launch") end
         else
             local x = tonumber(args[3]); local z = tonumber(args[4])
             if not x or not z then print("Usage: launch <node> <x> <z>"); return end
@@ -1714,7 +1877,8 @@ local function execute(line)
             print("Target: X=" .. x .. " Z=" .. z)
             io.write("Type LAUNCH to confirm: ")
             if io.read() ~= "LAUNCH" then print("Launch cancelled."); return end
-            sendOperational(node, "LAUNCH", x, z)
+            local sent = sendOperational(node, "LAUNCH", x, z)
+            if sent then registerFriendlyExpectation(node, 1, x, z, "launch") end
         end
     elseif command == "strike" then
         local node = getNode(args[2])
