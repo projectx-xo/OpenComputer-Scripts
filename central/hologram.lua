@@ -5,6 +5,7 @@ return function(options)
     local viewer, offers = {}, {}
     local job, selected, displayed, message, serial = nil, options.address, nil, "Waiting for a completed combined scan", 0
     local nextDeviceCheck = 0
+    local model, selectedFinding, view = nil, nil, "cutaway"
 
     local function projector()
         local addresses={}
@@ -23,7 +24,8 @@ return function(options)
     end
 
     local function begin(node,frame)
-        job={node=node,frame=frame,stage="device",kind="structure",page=1,chunks={},bounds=nil}
+        model=nil;selectedFinding=nil
+        job={node=node,frame=frame,stage="device",kind="structure",page=1,chunks={},bounds=nil,findings={}}
         nextDeviceCheck=0
         message="Preparing " .. node .. " | " .. frame.summary
     end
@@ -44,14 +46,22 @@ return function(options)
         for row in data:gmatch("[^|]+") do
             local values={}
             for field in row:gmatch("[^,]+") do
-                assert(field:match("^%-?%d+$"),"Invalid model coordinate")
-                local value=tonumber(field)
-                assert(value and math.abs(value)<=32000000,"Model coordinate out of range")
-                values[#values+1]=value
+                if kind=="findings" and #values==7 then
+                    assert(#field<=40 and field:match('^[A-Z_]+$'),"Invalid finding classification")
+                    values[#values+1]=field
+                else
+                    assert(field:match("^%-?%d+$"),"Invalid model coordinate")
+                    local value=tonumber(field)
+                    assert(value and math.abs(value)<=32000000,"Model coordinate out of range")
+                    values[#values+1]=value
+                end
             end
-            assert(#values==(kind=="structure" and 4 or 6),"Invalid model row")
+            assert(#values==(kind=="structure" and 4 or kind=="findings" and 10 or 6),"Invalid model row")
             if kind=="structure" then assert(values[4]==1 or values[4]==2,"Invalid structure color")
             else for axis=1,3 do assert(values[axis]<=values[axis+3],"Reversed target bounds") end end
+            if kind=="findings" then
+                assert(values[7]>=1 and values[7]<=128 and values[9]>=0 and values[9]<=100 and values[10]>=0,"Invalid finding metadata")
+            end
             count=count+1;assert(count<=(kind=="structure" and 64 or 8),"Oversized model page")
             consume(values)
         end
@@ -72,12 +82,19 @@ return function(options)
         local ok,err=pcall(function()
             assert(type(done)=="boolean","Invalid model completion flag")
             rows(data,j.kind,function(v)
-                extend(j,v[1],v[2],v[3]);if j.kind=="targets" then extend(j,v[4],v[5],v[6]) end
+                extend(j,v[1],v[2],v[3])
+                if j.kind~="structure" then
+                    extend(j,v[4],v[5],v[6])
+                    if j.kind=="findings" then
+                        assert(v[7]==#j.findings+1,"Finding IDs must match scan order")
+                        j.findings[v[7]]=v
+                    end
+                end
             end)
             j.chunks[#j.chunks+1]={kind=j.kind,data=data}
             j.pending=nil
             if done then
-                if j.kind=="structure" then j.kind="targets";j.page=1
+                if j.kind=="structure" then j.kind=j.frame.modelVersion==2 and "findings" or "targets";j.page=1
                 else j.stage="prepare" end
             else
                 j.page=j.page+1
@@ -87,31 +104,56 @@ return function(options)
         if not ok then fail("ERROR: " .. tostring(err)) end
     end
 
+    local contextTypes={STRUCTURE=true,REINFORCED_STRUCTURE=true,POSSIBLE_SILO=true,BUNKER=true,CAVITY=true,TUNNEL=true}
+    local function describe(f)
+        return string.format("#%d %s | %d,%d,%d to %d,%d,%d | confidence=%d%% | count=%d",
+            f[7],f[8],f[1],f[2],f[3],f[4],f[5],f[6],f[9],f[10])
+    end
+
     local function prepare(j)
         local b=j.bounds or {0,0,0,0,0,0}
-        local scale=math.max(1,(b[4]-b[1])/45,(b[5]-b[2])/29,(b[6]-b[3])/45)
+        -- Reserve two voxels on every side for symbols centered on detections.
+        local scale=math.max(1,(b[4]-b[1])/43,(b[5]-b[2])/27,(b[6]-b[3])/43)
         local offsets={math.floor((49-math.floor((b[4]-b[1])/scale))/2),
             math.floor((33-math.floor((b[5]-b[2])/scale))/2),math.floor((49-math.floor((b[6]-b[3])/scale))/2)}
         local function point(x,y,z)
             return offsets[1]+math.floor((x-b[1])/scale),offsets[2]+math.floor((y-b[2])/scale),offsets[3]+math.floor((z-b[3])/scale)
         end
         j.scale=scale
+        local drawView, selection=view,selectedFinding
+        local function visible(x,y,z)
+            if drawView=="structure" then return true end
+            if drawView=="findings" then return false end
+            -- Open the +Z half of each inferred enclosure, including its sampled
+            -- walls just outside the cavity bounds. Other structures use the scene plane.
+            for _,f in pairs(j.findings) do
+                if contextTypes[f[8]] and f[6]>f[3] and f[5]>f[2]
+                    and x>=f[1]-2*scale and x<=f[4]+2*scale
+                    and y>=f[2]-2*scale and y<=f[5]+2*scale
+                    and z>=f[3]-2*scale and z<=f[6]+2*scale then
+                    return z<(f[3]+f[6])/2
+                end
+            end
+            return b[6]-b[3]<scale or z<(b[3]+b[6])/2
+        end
         j.draw=coroutine.create(function()
             local voxels={}
-            -- Coalesced structural cells retain the strongest resistance category.
+            -- Structure is dim context. Finding symbols are drawn after it.
             for _,chunk in ipairs(j.chunks) do
                 if chunk.kind=="structure" then
                     rows(chunk.data,chunk.kind,function(v)
-                        local x,y,z=point(v[1],v[2],v[3]);local key=(x-1)*1536+(z-1)*32+y-1
-                        voxels[key]=math.max(voxels[key] or 0,v[4])
+                        if visible(v[1],v[2],v[3]) then
+                            local x,y,z=point(v[1],v[2],v[3]);local key=(x-1)*1536+(z-1)*32+y-1
+                            voxels[key]=1
+                        end
                     end)
                     coroutine.yield()
                 end
             end
             local holo,address=projector();j.address=address
             local colorCount=holo.maxDepth()>1 and 3 or 1
-            holo.setPaletteColor(1,0x56CFE1)
-            if colorCount==3 then holo.setPaletteColor(2,0xFFBE55);holo.setPaletteColor(3,0xFF5555) end
+            holo.setPaletteColor(1,0x20505C)
+            if colorCount==3 then holo.setPaletteColor(2,0xA87824);holo.setPaletteColor(3,0xE04040) end
             holo.clear();j.cleared=true;displayed=nil
             local function plot(x,y,z,color)
                 -- Re-check the component only once per batch in tick.
@@ -119,18 +161,59 @@ return function(options)
                 coroutine.yield()
             end
             for key,color in pairs(voxels) do
-                plot(math.floor(key/1536)+1,key%32+1,math.floor(key/32)%48+1,color)
+                if colorCount~=1 or not selection then
+                    plot(math.floor(key/1536)+1,key%32+1,math.floor(key/32)%48+1,color)
+                end
             end
             voxels=nil
-            for _,chunk in ipairs(j.chunks) do
-                if chunk.kind=="targets" then
-                    rows(chunk.data,chunk.kind,function(v)
-                        local x1,y1,z1=point(v[1],v[2],v[3]);local x2,y2,z2=point(v[4],v[5],v[6])
-                        for x=x1,x2 do for _,y in ipairs({y1,y2}) do for _,z in ipairs({z1,z2}) do plot(x,y,z,3) end end end
-                        for y=y1,y2 do for _,x in ipairs({x1,x2}) do for _,z in ipairs({z1,z2}) do plot(x,y,z,3) end end end
-                        for z=z1,z2 do for _,x in ipairs({x1,x2}) do for _,y in ipairs({y1,y2}) do plot(x,y,z,3) end end end
-                    end)
+            local function box(v,color)
+                local x1,y1,z1=point(v[1],v[2],v[3]);local x2,y2,z2=point(v[4],v[5],v[6])
+                for x=x1,x2 do for _,y in ipairs({y1,y2}) do for _,z in ipairs({z1,z2}) do plot(x,y,z,color) end end end
+                for y=y1,y2 do for _,x in ipairs({x1,x2}) do for _,z in ipairs({z1,z2}) do plot(x,y,z,color) end end end
+                for z=z1,z2 do for _,x in ipairs({x1,x2}) do for _,y in ipairs({y1,y2}) do plot(x,y,z,color) end end end
+            end
+            local function marker(v,color)
+                local x,y,z=point((v[1]+v[4])/2,(v[2]+v[5])/2,(v[3]+v[6])/2)
+                -- Symbols indicate finding type, not the object's physical dimensions.
+                local kind=v[8]
+                if kind=="MISSILE" then
+                    for dy=-2,2 do plot(x,y+dy,z,color) end
+                    plot(x-1,y,z,color);plot(x+1,y,z,color)
+                elseif kind=="LAUNCH_INFRASTRUCTURE" or kind=="SILO_HATCH" then
+                    local radius=kind=="SILO_HATCH" and 1 or 2
+                    for d=-radius,radius do
+                        plot(x+d,y,z-radius,color);plot(x+d,y,z+radius,color)
+                        plot(x-radius,y,z+d,color);plot(x+radius,y,z+d,color)
+                    end
+                    if kind=="SILO_HATCH" then plot(x,y,z,color) end
+                else
+                    plot(x,y,z,color);plot(x-1,y,z,color);plot(x+1,y,z,color)
+                    plot(x,y,z-1,color);plot(x,y,z+1,color)
                 end
+            end
+            -- Inferred bounds first, equipment second, selected finding last.
+            for pass=1,3 do
+                for _,v in ipairs(j.findings) do
+                    local isContext=contextTypes[v[8]]
+                    local priority=selection==v[7] and 3 or isContext and 1 or 2
+                    if priority==pass and (colorCount~=1 or not selection or selection==v[7]) then
+                        local color=(selection and selection==v[7] or not selection and not isContext) and 3 or 2
+                        if v[1]~=v[4] or v[2]~=v[5] or v[3]~=v[6] then box(v,color) end
+                        if not isContext or (v[1]==v[4] and v[2]==v[5] and v[3]==v[6]) then marker(v,color) end
+                    end
+                end
+            end
+            -- Older intel runtimes can still display coordinate-only bounds.
+            for _,chunk in ipairs(j.chunks) do
+                if chunk.kind=="targets" then rows(chunk.data,chunk.kind,function(v)box(v,3)end) end
+            end
+            j.detail=" | view="..drawView.." | "..#j.findings.." findings"
+            if j.frame.modelVersion~=2 then
+                j.detail=j.detail.." | Untyped legacy data; deploy the updated intel runtime"
+            elseif selection and j.findings[selection] then
+                j.detail=j.detail.." | Selected "..describe(j.findings[selection])
+            else
+                j.detail=j.detail.." | hologram list / select <finding-number>"
             end
         end)
         j.stage="draw"
@@ -163,9 +246,9 @@ return function(options)
                 for _=1,64 do
                     local resumed,problem=coroutine.resume(j.draw);assert(resumed,problem)
                     if coroutine.status(j.draw)=="dead" then
-                        displayed=j.node .. " | " .. j.frame.summary .. string.format(" | %.2f world blocks/voxel",j.scale)
+                        displayed=j.node .. " | " .. j.frame.summary .. string.format(" | %.2f world blocks/voxel",j.scale)..j.detail
                         message=(j.bounds and "DISPLAYED " or "EMPTY (no sampled structure or equipment) ") .. displayed
-                        job=nil
+                        model=j;job=nil
                         if options.log then options.log("[HOLOGRAM] " .. message) end
                         break
                     end
@@ -185,6 +268,26 @@ return function(options)
     function viewer.command(action,arg)
         action=action or "status"
         if action=="status" then return true,viewer.status() end
+        if action=="list" then
+            if not model then return false,"Wait for a completed hologram model" end
+            if model.frame.modelVersion~=2 then return false,"Deploy the updated intel runtime for typed findings" end
+            local lines={"Findings for "..model.node.." | numbers match scan results"}
+            for _,f in ipairs(model.findings) do lines[#lines+1]=describe(f) end
+            return true,table.concat(lines,"\n")
+        elseif action=="select" then
+            if not model or job then return false,"Wait for the model to finish drawing" end
+            local index=tonumber(arg)
+            if arg~="all" and (not index or not model.findings[index]) then return false,"Finding not found; use hologram list" end
+            selectedFinding=arg~="all" and index or nil
+            job=model;job.stage="prepare"
+            return true,selectedFinding and ("Selected "..describe(model.findings[index])) or "Showing all findings"
+        elseif action=="view" then
+            if arg~="cutaway" and arg~="structure" and arg~="findings" then return false,"Use hologram view cutaway|structure|findings" end
+            if job then return false,"Wait for the model to finish drawing" end
+            view=arg
+            if model then job=model;job.stage="prepare" end
+            return true,"View: "..view..(view=="cutaway" and " (+Z half opened)" or "")
+        end
         if action=="show" then
             if not offers[arg] then return false,"No completed combined scan from " .. tostring(arg) end
             begin(arg,offers[arg]);return true,"Queued hologram from " .. arg
@@ -198,10 +301,10 @@ return function(options)
         elseif action=="clear" then
             local ok,err=pcall(function()local holo=projector();holo.clear()end)
             if not ok then return false,tostring(err) end
-            job=nil;displayed=nil;message="CLEARED; waiting for a new scan or hologram show <node>"
+            job=nil;model=nil;displayed=nil;message="CLEARED; waiting for a new scan or hologram show <node>"
             return true,message
         end
-        return false,"hologram status | show <node> | clear | bind <projector-address>"
+        return false,"hologram status | list | select <number|all> | view cutaway|structure|findings | show <node> | clear | bind <address>"
     end
     return viewer
 end

@@ -88,7 +88,7 @@ local function observeScan()
         frameSequence = frameSequence + 1
         local session = tostring(context.session or context.id)
         scanFrame = {id=session .. ":" .. frameSequence, sequence=frameSequence, session=session,
-            summary=summary, address=address}
+            summary=summary, address=address, modelVersion=2}
         context.send(nil, "SCAN_COMPLETE", scanFrame)
     end
     return sat
@@ -113,14 +113,21 @@ local function modelPage(frame, page)
         end
         if #rows ~= count or count > 64 then error("Malformed structural page") end
         return table.concat(rows,"|"), count < 64 or index == 128
-    elseif kind == "targets" and index <= 16 then
+    elseif (kind == "targets" or kind == "findings") and index <= 16 then
         local count = math.min(128, sat.intelFindingCount())
         for i=(index-1)*8+1, math.min(index*8,count) do
             local f={sat.intelGetFinding(i)}
             if not f[1] then error("Finding unavailable") end
-            if (f[15] and f[15] ~= "") or f[11] or f[13] then
+            if kind == "findings" or (f[15] and f[15] ~= "") or f[11] or f[13] then
                 local coordinates={}
                 for axis=4,9 do coordinates[#coordinates+1]=integer(f[axis],"Target coordinate") end
+                if kind == "findings" then
+                    local classification=tostring(f[2])
+                    if not classification:match('^[A-Z_]+$') or #classification>40 then error("Invalid finding classification") end
+                    coordinates[7]=i;coordinates[8]=classification
+                    coordinates[9]=math.floor(math.max(0,math.min(1,tonumber(f[3]) or 0))*100+.5)
+                    coordinates[10]=integer(f[17] or 0,"Target count",0)
+                end
                 rows[#rows+1]=table.concat(coordinates,",")
             end
         end

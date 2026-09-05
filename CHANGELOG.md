@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.0
+
+- Open sampled silo walls in the default hologram cutaway and keep inferred structure bounds as outlines. Add full-structure and findings-only views.
+- Preserve all scan finding numbers, classifications, confidence and target counts in intel runtime 1.2.0's paged model transfer.
+- Give missiles, launchers and silo hatches distinct symbols anchored at their reported coordinates, including co-located missiles and launch tables. Symbols do not imply physical object dimensions.
+- Add `hologram list`, `hologram select <number|all>` and `hologram view cutaway|structure|findings`. Selection highlights one finding, or isolates it on Tier 1 projectors, using cached scan data.
+- Keep legacy coordinate-only node support with an explicit upgrade notice. Add regression coverage using the eight reported findings, maximum finding pagination, boundary symbols and CENTRAL command routing.
+
 ## 3.1.4
 
 - Fix the actual cause of the installation `nil` failure: OpenOS file close returns no value on success. Check flush errors explicitly before promoting downloaded files.

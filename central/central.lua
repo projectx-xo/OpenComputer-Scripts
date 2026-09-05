@@ -20,7 +20,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.1.0"
+local VERSION = "3.2.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -1952,7 +1952,8 @@ local function printHelp()
     print("  strike <node> <class> <count> <x> <z>")
     print("")
     print("Satellite: scan [node] <x> <z> | scan [node] status|results [page]|structure [page]")
-    print("Hologram:  hologram status | show <node> | clear | bind <projector-address>")
+    print("Hologram:  hologram status | list | select <number|all> | view cutaway|structure|findings")
+    print("           hologram show <node> | clear | bind <projector-address>")
     print("Setup: doctor [node] | hardware <node> | map <node> <label> <pad> <inventory> <side> [slot]")
     print("  alias <node> <name> | maintenance <node> on|off | defense node <node>")
     print("  confirm LAUNCH|STRIKE | cancel")

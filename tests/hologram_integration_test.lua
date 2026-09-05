@@ -12,14 +12,16 @@ local function packet(kind,payload,replyTo)
 end
 local modem={open=function()end,close=function()end,broadcast=function(port,marker,encoded)
     local e=unserialize(encoded);local p=e.payload
-    if p[1]=='DISCOVER' then packet('BOOT_HELLO',{'INTEL-1','intel','3.0.0','1.1.0','running','running','boot-A'})
+    if p[1]=='DISCOVER' then packet('BOOT_HELLO',{'INTEL-1','intel','3.0.0','1.2.0','running','running','boot-A'})
     elseif p[1]=='CLAIM' then packet('MGMT_ACK',{'CLAIM',true},e.id)
     elseif p[1]=='STATUS' then
         packet('RUNTIME',{'STATUS',serialize({intelligence=true,ready=true,satelliteType='COMBINED_INTEL',scanState='COMPLETE',
-            scanFrame={id='boot-A:1',session='boot-A',sequence=1,summary='COMBINED;10;20;100%'}}),p[3]})
+            scanFrame={id='boot-A:1',session='boot-A',sequence=1,modelVersion=2,summary='COMBINED;10;20;100%'}}),p[3]})
     elseif p[1]=='SCAN_MODEL' then
         queried=queried+1
-        packet('RUNTIME',{'SCAN_MODEL',p[2],p[3],p[4],p[3]=='structure:1' and '10,40,20,1|12,42,22,2' or '',true})
+        local pages={['structure:1']='10,40,20,1|12,42,22,2',
+            ['findings:1']='10,40,20,10,40,20,1,MISSILE,100,1|10,40,20,10,40,20,2,LAUNCH_INFRASTRUCTURE,100,1'}
+        packet('RUNTIME',{'SCAN_MODEL',p[2],p[3],p[4],assert(pages[p[3]],'wrong model section'),true})
     end
     return true
 end}
@@ -49,17 +51,20 @@ local modules={component=component,event=event,computer={uptime=function()return
     term={clear=function()end},serialization={serialize=serialize,unserialize=unserialize}}
 local env=setmetatable({require=function(name)return assert(modules[name],name)end,
     io={open=fileOpen,stderr=io.stderr,read=function()error('foreground input')end,write=function()end}},{__index=_G})
-local commands={'hologram status','hologram clear'}
+local commands={'hologram status','hologram list','hologram select 2','hologram status','hologram clear'}
 local commandIndex=0
 assert(loadfile('central/central.lua','t',env))({appDir='.',ready=function()end,log=function()end,
-    stopping=function()return clock>20 end,
+    stopping=function()return clock>24 end,
     nextCommand=function()
-        if clock<12 or commandIndex>=#commands then return end
+        if clock<12+commandIndex*2 or commandIndex>=#commands then return end
         commandIndex=commandIndex+1;return {id=commandIndex,line=commands[commandIndex]}
     end,reply=function(i,ok,text)replies[i]={ok,text}end})
 assert(queried==2,'CENTRAL did not request both model sections over the mesh')
-assert(drawn==2,'CENTRAL did not render the received structural model')
-assert(replies[1][2]:find('DISPLAYED',1,true),replies[1][2])
-assert(replies[2][2]:find('CLEARED',1,true) and cleared==2,'hologram clear command was not routed')
+assert(drawn>2,'CENTRAL did not render finding symbols')
+assert(replies[1][2]:find('DISPLAYED',1,true) and replies[1][2]:find('2 findings',1,true),replies[1][2])
+assert(replies[2][2]:find('#1 MISSILE',1,true) and replies[2][2]:find('#2 LAUNCH_INFRASTRUCTURE',1,true),replies[2][2])
+assert(replies[3][1] and replies[3][2]:find('10,40,20',1,true),replies[3][2])
+assert(replies[4][2]:find('Selected #2 LAUNCH_INFRASTRUCTURE',1,true),replies[4][2])
+assert(replies[5][2]:find('CLEARED',1,true) and cleared==3,'hologram clear command was not routed')
 assert(next(timers)==nil,'CENTRAL leaked a timer on shutdown')
-print('PASS CENTRAL modem scan completion -> page requests -> projector -> console clear')
+print('PASS CENTRAL modem scan completion -> typed findings -> projector -> console selection and clear')

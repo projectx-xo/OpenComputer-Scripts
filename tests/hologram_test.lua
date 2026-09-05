@@ -7,7 +7,7 @@ local function test(name, fn)
 end
 local function setup(depth)
     local clock, messages, requests, pixels, palettes = 0, {}, {}, {}, {}
-    local s = {state='RUNNING', kind='COMBINED_INTEL', clears=0, writes=0, connected=true}
+    local s = {state='RUNNING', kind='COMBINED_INTEL', clears=0, writes=0, connected=true, requestCount=0}
     local sat = {
         isConnected=function()return s.connected end, getType=function()return s.kind end,
         intelStatus=function()return s.state,0,0,100 end,
@@ -50,7 +50,7 @@ local function setup(depth)
         local chunk=loadfile('central/hologram.lua')
         assert(chunk,'CENTRAL hologram viewer is missing')
         viewer=chunk()({component=component,now=function()return clock end,log=function()end,
-            send=function(node,...)requests[#requests+1]={node,...};return true end})
+            send=function(node,...)s.requestCount=s.requestCount+1;requests[#requests+1]={node,...};return true end})
         return viewer
     end
     local function step(deliver)
@@ -102,17 +102,117 @@ test('other satellite types and disconnected links cannot export models',functio
         assert(t.messages()[#t.messages()][5]==false,'ineligible satellite supplied a model')
     end
 end)
+local function reportedScan(t)
+    local findings={
+        {true,'SILO_HATCH',1,522,54,1724,522,54,1724,false,true,false,true,false,'SILO_HATCH','hbm:tile.silo_hatch_large',1},
+        {true,'MISSILE',1,508,5,1709,508,5,1709,false,true,false,true,false,'LOADED_MISSILE','hbm:item.missile_custom',1},
+        {true,'LAUNCH_INFRASTRUCTURE',1,508,5,1709,508,5,1709,false,true,false,true,false,'LAUNCH_TABLE','hbm:tile.launch_table',1},
+        {true,'SILO_HATCH',1,508,53,1709,508,53,1709,false,true,false,true,false,'SILO_HATCH','hbm:tile.silo_hatch_large',1},
+        {true,'REINFORCED_STRUCTURE',.75,507,55,1709,507,55,1709,true,false,false,false,false,'','',0},
+        {true,'MACHINERY',.9,526,54,1724,526,54,1724,false,true,false,false,false,'','',0},
+        {true,'POSSIBLE_SILO',1,504,7,1705,512,51,1713,true,true,false,true,false,'','',0},
+        {true,'MACHINERY',.48,508,53,1713,508,53,1713,false,true,false,false,false,'','',0},
+    }
+    t.sat.intelFindingCount=function()return #findings end
+    t.sat.intelGetFinding=function(i)return table.unpack(findings[i])end
+    -- Representative front/back wall samples, not an invented full-world scan.
+    t.sat.intelStructuralPage=function()return true,4,
+        '503,25,1704,hbm:wall,0,84,HEAVY|513,25,1714,hbm:wall,0,84,HEAVY|507,55,1709,hbm:wall,0,84,HEAVY|522,54,1724,hbm:wall,0,84,HEAVY' end
+end
+test('model transfer preserves all eight reported finding identities and types',function()
+    local t=setup();reportedScan(t);t.state.state='COMPLETE';t.step()
+    local frame=t.runtime.status().scanFrame
+    t.runtime.onMessage('CENTRAL','SCAN_MODEL',frame.id,'findings:1','typed')
+    local reply=t.messages()[#t.messages()]
+    assert(type(reply[5])=='string','typed findings not exported')
+    assert(reply[5]:find('508,5,1709,508,5,1709,2,MISSILE',1,true),'missile identity lost')
+    assert(reply[5]:find('508,5,1709,508,5,1709,3,LAUNCH_INFRASTRUCTURE',1,true),'co-located launcher identity lost')
+    assert(reply[5]:find(',5,REINFORCED_STRUCTURE',1,true),'finding without equipment flags was omitted')
+    local count=0;for _ in reply[5]:gmatch('[^|]+')do count=count+1 end
+    assert(count==8 and reply[6]==true,'finding list does not match console')
+end)
+test('cutaway opens silo walls and keeps co-located missile and launcher selectable',function()
+    local t=setup();reportedScan(t);local v=t.viewer();t.finish()
+    local fetched=t.state.requestCount
+    local ok,legend=v.command('list')
+    assert(ok and legend:find('#2 MISSILE',1,true) and legend:find('#3 LAUNCH_INFRASTRUCTURE',1,true),'findings cannot be identified')
+    assert(legend:find('#7 POSSIBLE_SILO',1,true),'inferred silo not identified')
+    assert(v.command('select','2'));for _=1,100 do t.step()end
+    assert(v.status():find('#2 MISSILE',1,true) and v.status():find('508,5,1709',1,true),v.status())
+    local missile={};for p,c in pairs(t.pixels)do if c==3 then missile[p]=true end end
+    assert(v.command('select','3'));for _=1,100 do t.step()end
+    assert(v.status():find('#3 LAUNCH_INFRASTRUCTURE',1,true),v.status())
+    local different=false;for p,c in pairs(t.pixels)do if c==3 and not missile[p] then different=true end end
+    assert(different,'missile and launcher render as the same marker')
+    local cut=0;for _,c in pairs(t.pixels)do if c==1 then cut=cut+1 end end
+    assert(v.command('view','structure'));for _=1,100 do t.step()end
+    local full=0;for _,c in pairs(t.pixels)do if c==1 then full=full+1 end end
+    assert(full>cut,'cutaway did not remove obscuring wall samples')
+    assert(v.command('view','findings'));for _=1,100 do t.step()end
+    for _,c in pairs(t.pixels)do assert(c~=1,'findings view still contains obscuring wall samples')end
+    local accepted=v.command('select','99');assert(not accepted,'nonexistent finding selected')
+    assert(t.state.requestCount==fetched,'selection or view redownloaded the model')
+end)
+test('tier one selection isolates each co-located equipment symbol',function()
+    local t=setup(1);reportedScan(t);local v=t.viewer();t.finish()
+    for _,selection in ipairs({{'2',7},{'3',16},{'4',9}})do
+        assert(v.command('select',selection[1]));for _=1,100 do t.step()end
+        local count=0;for _,c in pairs(t.pixels)do assert(c==1);count=count+1 end
+        assert(count==selection[2],'single-color selection contains other findings or loses its symbol')
+    end
+    assert(v.command('select','all'));for _=1,100 do t.step()end
+    local count=0;for _ in pairs(t.pixels)do count=count+1 end
+    assert(count>16,'select all did not restore context')
+end)
+test('legacy coordinate-only nodes still display with an explicit upgrade notice',function()
+    local t=setup();t.state.state='COMPLETE';t.step();local frame=t.runtime.status().scanFrame
+    local v=t.viewer()
+    v.offer('INTEL-1',{id=frame.id,session=frame.session,sequence=2,summary=frame.summary})
+    for _=1,100 do t.step()end
+    assert(v.status():find('DISPLAYED',1,true) and v.status():find('Untyped legacy data',1,true),v.status())
+    assert(t.pixels['24,16,24']==3,'legacy target missing')
+    assert(not v.command('list'),'legacy bounds presented as typed findings')
+    t.runtime.onMessage('CENTRAL','SCAN_MODEL',frame.id,'targets:1','old-central')
+    assert(t.messages()[#t.messages()][5]=='102,41,202,102,41,202','old CENTRAL target format changed')
+end)
+test('all 128 findings survive bounded pages with stable scan numbers',function()
+    local t=setup();local v=t.viewer();local read={}
+    t.sat.intelStructuralPage=function()return false,'OUT_OF_RANGE'end
+    t.sat.intelFindingCount=function()return 128 end
+    t.sat.intelGetFinding=function(i)
+        read[i]=true
+        return true,'MISSILE',1,i,40,0,i,40,0,false,true,false,true,false,'LOADED_MISSILE','hbm:item.missile_custom',1
+    end
+    t.finish();local ok,legend=v.command('list');assert(ok,legend)
+    local count=0;for _ in legend:gmatch('#%d+ MISSILE')do count=count+1 end
+    assert(count==128 and read[128],'last findings page missing')
+    assert(t.state.requestCount==17,'unexpected page count')
+    assert(v.command('select','128'));for _=1,100 do t.step()end
+    assert(v.status():find('Selected #128 MISSILE',1,true),v.status())
+end)
+test('markers at extreme scan corners fit inside the projector',function()
+    local t=setup();local v=t.viewer()
+    t.sat.intelStructuralPage=function()return false,'OUT_OF_RANGE'end
+    t.sat.intelFindingCount=function()return 2 end
+    t.sat.intelGetFinding=function(i)
+        local x,y,z=i==1 and -30000000 or 30000000,i==1 and 0 or 255,i==1 and -30000000 or 30000000
+        return true,'MISSILE',1,x,y,z,x,y,z,false,true,false,true,false,'LOADED_MISSILE','hbm:item.missile_custom',1
+    end
+    t.finish();assert(v.status():find('DISPLAYED',1,true),v.status())
+    local count=0;for _ in pairs(t.pixels)do count=count+1 end
+    assert(count==14,'edge symbols clipped or merged')
+end)
 test('CENTRAL automatically renders centered structures and highlighted equipment',function()
-    local t=setup();local v=t.viewer();t.finish()
+    local t=setup();local v=t.viewer();assert(v.command('view','structure'));t.finish()
     assert(t.pixels['22,15,22']==1,'light structure absent or off center')
-    assert(t.pixels['26,17,26']==2,'heavy structure absent or wrong color')
+    assert(t.pixels['26,17,26']==1,'heavy structural context absent or off center')
     assert(t.pixels['24,16,24']==3,'equipment not highlighted')
     assert(v.status():find('DISPLAYED',1,true) and v.status():find('INTEL-1',1,true),v.status())
     local clears=t.state.clears;for _=1,30 do t.step()end
     assert(t.state.clears==clears,'unchanged scan redraws continuously')
 end)
 test('tier one renders the same geometry without invalid palette calls',function()
-    local t=setup(1);t.viewer();t.finish()
+    local t=setup(1);local v=t.viewer();assert(v.command('view','structure'));t.finish()
     assert(t.pixels['22,15,22']==1 and t.pixels['26,17,26']==1 and t.pixels['24,16,24']==1)
     assert(t.palettes[2]==nil and t.palettes[3]==nil)
 end)
@@ -133,7 +233,7 @@ test('delayed packets cannot overwrite a newer scan and retries have a limit',fu
     assert(v.status():find('TIMEOUT',1,true),v.status())
 end)
 test('large world extents keep uniform proportions within projector bounds',function()
-    local t=setup();t.viewer()
+    local t=setup();local v=t.viewer();assert(v.command('view','structure'))
     t.sat.intelStructuralPage=function()return true,2,'-30000,0,-40000,hbm:a,0,8,LIGHT|30000,255,40000,hbm:b,0,84,HEAVY' end
     t.sat.intelFindingCount=function()return 0 end
     t.finish();local count=0;for _ in pairs(t.pixels)do count=count+1 end
@@ -153,8 +253,7 @@ test('full structural pages preserve false completion flags and fetch the next p
     t.finish()
     assert(pages[2],'full page was mistaken for end of scan or rejected')
     assert(v.status():find('DISPLAYED',1,true),v.status())
-    local heavy=false;for _,color in pairs(t.pixels)do if color==2 then heavy=true end end
-    assert(heavy,'last page absent from model')
+    assert(t.pixels['46,16,24']==1,'last page absent from model')
 end)
 test('clear stays cleared until a new scan or explicit show',function()
     local t=setup();local v=t.viewer();t.finish();assert(v.command('clear'))

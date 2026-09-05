@@ -1,4 +1,4 @@
-# STRATCOM 3.1
+# STRATCOM 3.2
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 
@@ -164,19 +164,34 @@ These commands require `COMBINED_INTEL`. A communications relay satellite or ano
 
 Connect an OpenComputers hologram projector to **CENTRAL's component network**. The `intel` node keeps its satellite relay; CENTRAL fetches the completed scan over the modem. No satellite relay is required at CENTRAL.
 
-Use CENTRAL 3.1 and intelligence runtime 1.1. Existing service installations following this preview branch can run `stratcom update check`, then `stratcom update status`. The downloaded bundle activates when idle; CENTRAL distributes the new intelligence runtime through the mesh. Check `nodes` to confirm the intel runtime version, or use `deploy INTEL-1` to retry a held deployment. Fresh installations use the installer above.
+Use CENTRAL **3.2.0** and intelligence runtime **1.2.0**. Existing service installations following this preview branch can run `lua /usr/bin/stratcom.lua update check` in the OpenOS shell. If `source.txt` still points to an older pinned release, set it to the current manifest URL from the installation instructions first. The downloaded bundle activates when idle; CENTRAL distributes the new intelligence runtime through the mesh. In the console, check `service status` for bundle 3.2.0 and `nodes` for intel runtime 1.2.0, or use `deploy INTEL-1` to retry a held deployment. No node reinstall or mod JAR change is required for this hologram update. Fresh installations use the installer above.
 
 In CENTRAL's STRATCOM console:
 
 ```text
-scan INTEL-1 508 1710
+scan INTEL-1 507 1709
 scan INTEL-1 status
 hologram status
 ```
 
 After `COMPLETE`, CENTRAL fetches and draws the model automatically. A scan started locally at the intel node also updates the command-room projector. Status reports `FETCHING`, `DRAWING`, or `DISPLAYED`, with the source node, scan summary and world blocks per voxel. The last completed display stays visible while another scan runs or downloads. With several intel nodes, a newly received completed scan selects the displayed source.
 
-Scans with no structural samples or equipment bounds clear the previous geometry and report `EMPTY`.
+Scans with no structural samples or findings clear the previous geometry and report `EMPTY`.
+
+Once the model reports `DISPLAYED`, list its findings and select a number from that list:
+
+```text
+hologram list
+hologram select 2
+hologram select all
+hologram view findings
+hologram view structure
+hologram view cutaway
+```
+
+Finding numbers match `scan INTEL-1 results` for that scan. The list and selection status show classification, exact bounds, confidence and target count. Selection draws that finding in red and other findings in amber. Tier 1 projectors show only the selected finding, since they cannot separate colors. `select all` restores all findings. Selection and view changes redraw the cached model without fetching it again; wait for `DISPLAYED` before the next change.
+
+The default **cutaway** opens the projector-local +Z half of inferred enclosures and their nearby sampled walls; other structural samples use the scene's middle Z plane. Inferred bounds remain as outlines. `view structure` restores every sampled block, while `view findings` removes structural samples entirely. Views preserve the same coordinate transform and scale.
 
 ```text
 hologram show INTEL-1
@@ -186,17 +201,19 @@ hologram bind <full-projector-address>
 
 `show` selects or retries that node's latest announced completed scan. `clear` leaves the projector blank until a new scan arrives or you use `show`. A single projector is selected automatically. With several projectors, use `components hologram` in the OpenOS shell to list addresses, then `hologram bind` in STRATCOM; the binding is saved in CENTRAL's preferences. Missing projectors pause display work without blocking scan commands.
 
-The [OpenComputers hologram API](https://ocdoc.cil.li/component:hologram) supports **48 × 32 × 48 voxels**. Tier 2 adds three colors; Tier 1 uses one color for the same geometry:
+The [OpenComputers hologram API](https://ocdoc.cil.li/component:hologram) supports **48 × 32 × 48 voxels**. Tier 2 adds three colors; Tier 1 uses one color:
 
 | Appearance on Tier 2 | Meaning |
 | --- | --- |
-| Cyan points | Sampled structural blocks with HBM blast resistance below 40 |
-| Amber points | Sampled structural blocks with HBM blast resistance 40 or higher |
-| Red outlines | Bounds of detected equipment or launch infrastructure |
+| Dim cyan points | Sampled structural context |
+| Amber outlines | Inferred structures, including possible silos; other findings when one is selected |
+| Red symbols | Equipment findings, or the selected finding |
+
+Missiles use a vertical marker, launch infrastructure a larger horizontal ring, and silo hatches a smaller ring with a center point. Other point findings use a cross. Non-point findings also show their reported bounding box. A loaded missile and its launch table can share one reported coordinate; their different symbols keep both visible and independently selectable. These symbols indicate type, not physical missile or launcher dimensions.
 
 The model is centered and reduced uniformly when necessary, preserving proportions. Small models retain one world block per voxel. X, Y and Z map to the projector's local axes; physical projector orientation determines how that relates to the room. Existing projector scale/rotation settings are preserved.
 
-This is the satellite's **sampled structure and finding bounds**, not a block-perfect world copy. Unsampled terrain and blocks are not invented. The console remains the source for exact coordinates, confidence, target IDs and resistance values. The renderer supports the HBM limits of 8,192 structural samples and 128 findings, loads small pages, and writes at most 64 voxels per drawing step. Scan/session/request identities reject stale pages; missing replies get bounded retries and an explicit timeout.
+This is the satellite's **sampled structure and finding bounds**, not a block-perfect world copy. Unsampled terrain and blocks are not invented. The console remains the source for exact coordinates, confidence, target IDs and resistance values. The renderer supports the HBM limits of 8,192 structural samples and 128 findings, loads small pages, and writes at most 64 voxels per drawing step. Scan/session/request identities reject stale pages; missing replies get bounded retries and an explicit timeout. Older intel runtimes retain their coordinate-only display with an explicit upgrade notice; typed selection requires runtime 1.2.0.
 
 ## Updates and recovery
 
@@ -221,7 +238,7 @@ Configuration and saved operator preferences live outside release bundles. On di
 - `/home/stratcom/runtime/`: node current/previous runtime, versions and recovery files.
 - `/home/stratcom/releases/`: validated application bundles.
 
-The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.1.4` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
+The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.2.0` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
 
 ## Development and verification
 
@@ -243,7 +260,7 @@ The suites execute production code with simulated OpenOS hardware, filesystem, n
 To publish another bundle, commit its application files and version metadata first, then generate the manifest from that exact commit:
 
 ```sh
-python3 tools/make_release.py --ref <full-source-commit> --version 3.1.0
+python3 tools/make_release.py --ref <full-source-commit> --version 3.2.0
 ```
 
 Use a new version for every changed bundle. Commit `release.lua` separately so it can reference the immutable preceding source commit. A checksum validates transfer integrity; it is not a signature. Installers and update channels must come from the repository you trust.
