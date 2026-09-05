@@ -1,6 +1,6 @@
 return {
-    version = "3.1.0",
-    ref = "568cba8a1d0a5f58d950aeb9c8cf5ffc231b0930",
+    version = "3.1.1",
+    ref = "935e41073f693d6c0865131d52f99842972c982e",
     files = {
         ["central/central.lua"] = {size = 92996, checksum = "d54626e0"},
         ["central/hologram.lua"] = {size = 10312, checksum = "68b4effa"},
@@ -14,6 +14,6 @@ return {
         ["service/update.lua"] = {size = 8382, checksum = "8a2d5507"},
         ["service/rc.lua"] = {size = 349, checksum = "69447d54"},
         ["service/console.lua"] = {size = 1672, checksum = "f3902bb5"},
-        ["install.lua"] = {size = 5031, checksum = "aa4ecbb1"},
+        ["install.lua"] = {size = 5228, checksum = "fb790c8b"},
     },
 }
