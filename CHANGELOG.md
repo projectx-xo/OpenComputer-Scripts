@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.3.0
+
+- Keep slow background status requests alive until their timeout instead of replacing their token every five seconds. Refresh stale ABM readiness on demand and show status age/errors.
+- Support `ntm_custom_launch_pad` in strike runtime 3.1.0 using the Large Launch Pad's actual readiness, contents and designator callbacks. Mod v1.7 fixes the component's registration; connect to its center core.
+- Add paced strike queues with a one-second default interval and optional 1–60 second spacing. Acknowledge immediately, report progress, and keep status commands responsive. Disarm/stop, launch failures and payload changes cancel remaining shots.
+- Preserve each detected origin's association with its radar track. Suggest a counterstrike when contact is lost after an acknowledged ABM launch, keeping the intercept unconfirmed and the origin estimated.
+- Add `counterstrike <class> <count> [site-id] [node] [interval-seconds]` to prepare a strike using stored coordinates, with the existing explicit confirmation step.
+
 ## 3.2.0
 
 - Open sampled silo walls in the default hologram cutaway and keep inferred structure bounds as outlines. Add full-structure and findings-only views.

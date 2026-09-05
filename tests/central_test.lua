@@ -12,6 +12,50 @@ local function test(name, fn)
     if not ok then failures = failures + 1 end
 end
 
+test('slow status replies are not invalidated by the next background poll',function()
+    local clock, serial, sent=0,0,0
+    local node={claimed=true,runtimeState='running'}
+    local request=extract('requestRuntimeStatus','pollRuntimeStatus',{
+        now=function()return clock end,nodeOnline=function()return true end,
+        STATUS_INTERVAL=5,STATUS_REQUEST_TIMEOUT=15,
+        nextMessageId=function()serial=serial+1;return 'status-'..serial end,
+        sendOperational=function()sent=sent+1;return true end})
+    local token=request(node)
+    clock=6;request(node)
+    assert(node.pendingStatus==token and sent==1,'poll replaced the token before a six-second response could arrive')
+    clock=16;request(node)
+    assert(node.pendingStatus~=token and sent==2,'lost request did not expire')
+end)
+
+test('counterstrike suggestions require a fired interceptor and the same track origin',function()
+    local lines={}
+    local env={now=function()return 20 end,activeEngagements={},historyPush=function()end,
+        launchSites={[7]={id=7,x=507,z=1709,confidence='LOW'}},print=function(s)lines[#lines+1]=s end}
+    local finish=extract('finishEngagement','launchPendingEngagement',env)
+    finish({trackKey='RADAR:2',launchSiteId=7},'UNCONFIRMED','CONTACT_LOST_AFTER_ENGAGEMENT')
+    assert(env.latestCounterstrike==nil,'unacknowledged launch produced a retaliation suggestion')
+    finish({trackKey='RADAR:2',launchSiteId=7,firedAt=10},'UNCONFIRMED','CONTACT_LOST_AFTER_ENGAGEMENT')
+    assert(env.latestCounterstrike==7,'known origin did not produce a suggestion')
+    assert(table.concat(lines,'\n'):find('counterstrike',1,true),'no operator hint')
+end)
+
+test('counterstrike resolves the suggested site without requiring coordinates',function()
+    local planned
+    local node={id='SILO-S2',role='strike',claimed=true,runtimeState='running',lastStatus=99,multiLauncher=true}
+    local env={nodes={['SILO-S2']=node},launchSites={[7]={id=7,x=507.2,z=1709.2,confidence='LOW'}},latestCounterstrike=7,
+        now=function()return 100 end,STATUS_INTERVAL=5,VALID_CLASSES={nuclear=true},print=function()end,
+        getNode=function(id)return id=='SILO-S2' and node end,nodeOnline=function()return true end,
+        selectPayloadLaunchers=function()return {1,2,3,4}end,
+        executeStrike=function(n,c,count,x,z,interval)planned={n.id,c,count,x,z,interval}end}
+    local run=extract('executeCounterstrike','printHelp',env)
+    run({'counterstrike','nuclear','4','7','SILO-S2','3'})
+    assert(planned and planned[1]=='SILO-S2' and planned[3]==4 and planned[4]==507 and planned[5]==1709 and planned[6]==3,'wrong origin or pacing')
+    planned=nil;run({'counterstrike','nuclear','1'})
+    assert(planned and planned[3]==1 and planned[4]==507,'short command did not use latest suggestion')
+    planned=nil;env.latestCounterstrike=nil;run({'counterstrike','nuclear','1'})
+    assert(not planned,'counterstrike guessed a site without a suggestion')
+end)
+
 test('operator STOP and maintenance survive reconciliation', function()
     for _, state in ipairs({'stopped', 'maintenance'}) do
         local sent = {}

@@ -1,4 +1,4 @@
-# STRATCOM 3.2
+# STRATCOM 3.3
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 
@@ -26,7 +26,7 @@ lua /usr/bin/stratcom.lua
 
 | Role | Example ID | Connected hardware |
 | --- | --- | --- |
-| `strike` | `SILO-S1` | One or more `ntm_launch_pad` components and inventory controllers |
+| `strike` | `SILO-S1` | One or more `ntm_launch_pad` or `ntm_custom_launch_pad` components and inventory controllers |
 | `defense` | `ABM-A1` | One launch pad and inventory controller |
 | `radar` | `RADAR-1` | One or more `ntm_radar` components |
 | `intel` | `INTEL-1` | `ntm_satlink` connected to a `COMBINED_INTEL` satellite |
@@ -106,6 +106,43 @@ engagements
 ```
 
 `sync` reloads the installed bundle's runtime manifest. `update check` obtains a newer application bundle from GitHub. Deployment is serialized and deferred while relevant operations are busy. A failed runtime version is held until an explicit `deploy` retry or a newer version arrives.
+
+### Large Launch Pads
+
+HBM's **Large Launch Pad** (the custom missile launch table) exposes `ntm_custom_launch_pad`. It needs [mod v1.7](https://github.com/projectx-xo/HBM-s-Nuclear-Tech/releases/tag/tjHBM-NTM-v1.7) or later to fix its OpenComputers component registration. Connect the adapter or OC cable directly to the **center core block**, preferably underneath; the outer platform and port dummy blocks do not expose the OC interface. Check `components ntm_custom_launch_pad` in the OpenOS shell.
+
+STRATCOM strike runtime **3.1.0** recognizes both pad types. Custom pads use their own contents/readiness callbacks and set the loaded designator's coordinates before launching. Keep a compatible designator in the pad. Map each pad to the correct inventory controller and side with `hardware <node>` and `map` as below. The defense runtime remains for ordinary ABM pads.
+
+### Paced strikes and counterstrikes
+
+CENTRAL 3.3 with strike runtime 3.1 supports an optional interval in seconds:
+
+```text
+strike SILO-S2 nuclear 4 507 1709 3
+confirm STRIKE
+```
+
+This queues four ready launchers at the same target, with at least three seconds between launches. The default is one second; allowed intervals are 1–60 seconds. Launch spacing does not guarantee identical impact spacing when missile speeds or flight paths differ. The console acknowledges the queue immediately. Use `status SILO-S2` for remaining launches and `logs` for progress/results. Commands remain responsive, and delayed ticks never fire missed shots in a burst. `disarm SILO-S2 all`, stopping the node, or entering maintenance cancels remaining shots. A failed launch or changed payload also cancels the remainder. Queues are not resumed after a runtime restart.
+
+If a hostile track has an associated possible launch site and is lost after a successful ABM launch, CENTRAL records a counterstrike suggestion in `logs` and `defense status`. Track loss remains **intercept unconfirmed**; the origin is an estimate. No strike is launched automatically.
+
+```text
+counterstrike nuclear 1
+confirm STRIKE
+```
+
+Here `1` is the number of missiles. The short command uses the latest suggestion and selects an available strike node with enough ready payloads of that class. Review the printed site, coordinates, selected launchers and interval before confirming. Without a suggestion, specify a recorded site from `launchsites`. For example, site #7, four launches from SILO-S2, three seconds apart:
+
+```text
+counterstrike nuclear 4 7 SILO-S2 3
+confirm STRIKE
+```
+
+The full syntax is `counterstrike <class> <count> [site-id] [node] [interval-seconds]`. `launchsite <id>` shows the origin estimate and confidence. Payload classes still come from the saved catalog; use `payloads <node>` and `classify <item-id> <class>` for unclassified missiles. The latest suggestion lasts for the CENTRAL session; recorded site IDs remain saved across restarts.
+
+### Stale ABM status
+
+`ABM_STATUS_STALE` means CENTRAL has no recent readiness response, even if bootstrap heartbeats show the node online. CENTRAL 3.3 keeps each background status request valid for up to 15 seconds, fixing rejection of replies delayed beyond the five-second polling interval. `defense status` refreshes stale readiness and displays its age and any reported status error. If it still times out, check `status ABM-A1`, `doctor ABM-A1`, the node's local `doctor`, chunk loading, and the modem link; stale readiness never enables a launch.
 
 Launcher and payload commands remain available:
 
@@ -262,6 +299,7 @@ lua tests/command_test.lua
 lua tests/hologram_test.lua
 lua tests/hologram_integration_test.lua
 lua tests/runtime_test.lua
+lua tests/strike_integration_test.lua
 lua tests/service_test.lua
 ```
 

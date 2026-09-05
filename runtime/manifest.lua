@@ -7,7 +7,7 @@ return {
             path = "runtime/launchpad.lua",
         },
         strike = {
-            version = "3.0.0",
+            version = "3.1.0",
             path = "runtime/strike.lua",
         },
         radar = {

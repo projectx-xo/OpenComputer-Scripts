@@ -27,7 +27,11 @@ OPENOS_LIB=work/openos-io lua tests/service_test.lua
 
 This uses the real buffer's read/write/flush/close implementation over a simulated filesystem component. Modem and thread boundaries remain simulated. It covers fresh CENTRAL installation through service startup, node runtime installation, reinstalling with a cached older updater, and failed writes.
 
+Strike tests connect production CENTRAL and the strike runtime over a simulated modem: estimated site coordinates enter a reviewed plan, confirmation queues four launches, and launches occur at least three seconds apart while status stays responsive. Other cases cover custom-pad callbacks, invalid/duplicate plans, disarming/stopping, payload changes, and delayed ticks without bursts. CENTRAL tests retain a status response delayed six seconds and verify that only a fired ABM with an associated origin produces a counterstrike suggestion.
+
 ## In-game smoke procedure
+
+For 3.3, connect an adapter underneath a Large Launch Pad core using mod v1.7 and verify `components ntm_custom_launch_pad`. Deploy strike runtime 3.1 and verify its inventory mapping, designator, fuel and power. Use four loaded pads to confirm the requested launch spacing and test disarming after the first shot. Check that `status` remains responsive and `logs` reports partial/cancelled results. After an ABM engagement with a detected origin, compare the suggested site with `launchsite <id>`; verify that `counterstrike nuclear 1` only creates a plan and that nothing launches until confirmation. Also check normal ABM polling and a temporarily delayed/disconnected node: fresh replies should restore readiness, while missing replies should show age/error details and retain the stale-data hold.
 
 Use an idle CENTRAL and one node before updating the rest of a server.
 

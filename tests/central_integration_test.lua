@@ -32,7 +32,7 @@ local modem={open=function()end,close=function()closed=closed+1 end,broadcast=fu
     elseif p[1]=='STATUS' then
         packet('RUNTIME',{'STATUS',serialize({ready=false,missileLabel='WRONG TOKEN'}),'unrelated'})
         packet('RUNTIME',{'STATUS',serialize({ready=true,armed=false,missileLabel='TEST PAYLOAD',missileName='hbm:item.missile_test'}),p[3]})
-        queue[#queue].at=clock+2
+        queue[#queue].at=clock+6
     elseif p[1]=='SCAN_STATUS' then packet('RUNTIME',{'SCAN_STATUS','COMPLETE | coverage 100%',p[2]}) end
     return true
 end}
@@ -69,7 +69,7 @@ local options={appDir='.',ready=function()ready=true end,log=function()end,
 assert(nativeLoadfile('central/central.lua','t',env))(options)
 assert(ready,'did not report ready')
 assert(replies[1].ok and replies[1].text:find('TEST PAYLOAD',1,true),replies[1].text)
-assert(replies[1].at-userStatusStarted>=2,'printed before correlated reply arrived')
+assert(replies[1].at-userStatusStarted>=6,'printed before the slow correlated reply arrived')
 assert(not replies[1].text:find('WRONG TOKEN',1,true),'accepted unrelated status')
 assert(replies[3].text:find('service remains active',1,true),'quit stopped service')
 assert(replies[4].text:find('COMPLETE',1,true),'scan reply not returned')
