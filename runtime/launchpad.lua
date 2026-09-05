@@ -5,6 +5,7 @@ local context = nil
 local launchPad = nil
 local inventory = nil
 local armed = false
+local inventoryCache = nil
 
 local MISSILE_PREFIX = "hbm:item.missile_"
 local BATTERY_PREFIX = "hbm:item.battery_"
@@ -24,6 +25,13 @@ end
 
 local function getMissileInfo()
     if not inventory then return "", "", 0, nil end
+    if inventoryCache then
+        local ok, stack = pcall(inventory.getStackInSlot, inventoryCache.side, inventoryCache.slot)
+        if ok and stack and startsWith(stack.name, MISSILE_PREFIX) then
+            return stack.name, stack.label or stack.name, tonumber(stack.size) or 0, inventoryCache.side
+        end
+        inventoryCache = nil
+    end
 
     local batterySide = nil
 
@@ -36,6 +44,7 @@ local function getMissileInfo()
                     local name = tostring(stack.name or "")
 
                     if startsWith(name, MISSILE_PREFIX) then
+                        inventoryCache = {side=side,slot=slot}
                         return name,
                             tostring(stack.label or name),
                             tonumber(stack.size) or 0,
@@ -97,6 +106,7 @@ function runtime.start(ctx)
     context = assert(ctx, "runtime context is required")
     launchPad = findComponent("ntm_launch_pad")
     inventory = findComponent("inventory_controller")
+    inventoryCache = nil
     armed = false
 
     if not launchPad then
@@ -120,6 +130,10 @@ function runtime.stop()
     if context and context.log then
         context.log("Launchpad runtime stopped")
     end
+end
+
+function runtime.busy()
+    return armed
 end
 
 function runtime.tick()
