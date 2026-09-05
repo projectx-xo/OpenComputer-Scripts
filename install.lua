@@ -56,7 +56,7 @@ if not ok then
 end
 local version,err
 if bundle then version,err=update.stageLocal(bundle,print) else version,err=update.stage(source,print) end
-if not version and err==nil and not bundle then
+if not version and (err==nil or err=='nil') and not bundle then
     -- Older installed helpers could return nil without an error after a
     -- partial download. Refresh the helper from the requested source and
     -- retry so an upgrade does not fail with an unhelpful "nil" assertion.

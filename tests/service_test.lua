@@ -159,7 +159,7 @@ end
 function tests.install_refreshes_stale_updater_after_empty_failure()
  local h=harness();local branch='https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/'
  local raw=release(h,'fresh');h.net[branch..'release.lua']=raw;h.net[branch..'service/update.lua']=sources.update
- h.mods['stratcom.update']={stage=function()return nil end};h.env.package={loaded={}};h.env.print=function()end
+ h.mods['stratcom.update']={stage=function()return nil,'nil' end};h.env.package={loaded={}};h.env.print=function()end
  h.env.loadfile=function(path)
   if path=='service/update.lua' then return nil end
   return load(h.files[path] or '',path,'t',h.env)
