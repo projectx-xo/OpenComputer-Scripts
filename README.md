@@ -11,17 +11,17 @@ Run these in the **OpenOS shell**, one line at a time. These are script invocati
 On CENTRAL:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/release.lua"
-stratcom
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/release.lua"
+lua /usr/bin/stratcom.lua
 ```
 
 On a field node, replace the role and ID as appropriate:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/release.lua"
-stratcom
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/release.lua"
+lua /usr/bin/stratcom.lua
 ```
 
 | Role | Example ID | Connected hardware |
@@ -35,13 +35,15 @@ Every machine needs OpenOS with its thread library and a modem. Internet is need
 
 The installer enables `rc stratcom enable`, saves the machine configuration, installs the runtime and starts the service. It does not replace an existing node's ID, role, hardware mappings or installed runtime. A conflicting role/ID is rejected.
 
+If OpenOS reports `stratcom: is a directory`, use `lua /usr/bin/stratcom.lua` to attach, or append commands such as `service status` or `doctor`. This avoids the `/home/stratcom` directory shadowing the executable. Attach only after the installer reports success.
+
 ### Offline field nodes
 
 Copy the complete extracted release directory to a disk accessible to the node. From that directory, run:
 
 ```sh
-lua install.lua node radar RADAR-1 --bundle .
-stratcom
+lua install.lua node radar RADAR-1 -- --bundle .
+lua /usr/bin/stratcom.lua
 ```
 
 The directory must contain `release.lua` and the matching source files. The installer validates the local files and makes no Internet requests. Fresh offline installs disable automatic Internet update checks; CENTRAL still deploys role runtimes through the modem. Copy a newer bundle and repeat the install to update the node's bootstrap/service helpers.
@@ -219,7 +221,7 @@ Configuration and saved operator preferences live outside release bundles. On di
 - `/home/stratcom/runtime/`: node current/previous runtime, versions and recovery files.
 - `/home/stratcom/releases/`: validated application bundles.
 
-The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.1.3` manifest and its immutable source commit. Change `source.txt` to the main `release.lua` URL if you want future main-branch releases.
+The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.1.4` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
 
 ## Development and verification
 
