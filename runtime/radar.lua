@@ -8,6 +8,7 @@ local radars = {}
 local tracks = {}
 local nextTrackId = 1
 local scanTimer = nil
+local lastHardwareCheck = 0
 
 local POLL_INTERVAL = 0.25
 local UPDATE_INTERVAL = 1.0
@@ -60,7 +61,7 @@ end
 
 local function heading(dx, dz)
     if dx == 0 and dz == 0 then return 0 end
-    local angle = math.deg(math.atan(dx, -dz))
+    local angle = math.deg((math.atan2 or math.atan)(dx, -dz))
     if angle < 0 then angle = angle + 360 end
     return angle
 end
@@ -175,6 +176,8 @@ end
 local function publicTrack(track)
     return {
         id = track.id,
+        session = context.session,
+        sequence = track.sequence,
         typeId = track.typeId,
         typeName = track.typeName,
         isPlayer = track.isPlayer,
@@ -214,6 +217,7 @@ local function acquireTrack(observation, timestamp)
 
     local track = {
         id = id,
+        sequence = 1,
         typeId = observation.typeId,
         typeName = observation.typeName,
         isPlayer = observation.isPlayer,
@@ -257,6 +261,7 @@ local function updateTrack(track, observation, timestamp)
     track.heading = heading(track.vx, track.vz)
     track.radars = observation.radars
     track.lastSeen = timestamp
+    track.sequence = track.sequence + 1
     track.matched = true
 
     if timestamp - track.lastBroadcast >= UPDATE_INTERVAL then
@@ -331,13 +336,13 @@ local function scan()
     expireTracks(timestamp)
 end
 
-local function getStatus()
+local function getStatus(detail)
     local result = {
         radarStation = true,
         radarCount = #radars,
         activeTrackCount = 0,
         radars = {},
-        tracks = {},
+        tracks = detail ~= "summary" and {} or nil,
     }
 
     for index, radar in ipairs(radars) do
@@ -345,7 +350,7 @@ local function getStatus()
     end
 
     for id, track in pairs(tracks) do
-        result.tracks[id] = publicTrack(track)
+        if result.tracks then result.tracks[id] = publicTrack(track) end
         result.activeTrackCount = result.activeTrackCount + 1
     end
 
@@ -359,6 +364,7 @@ function runtime.start(ctx)
     radars = {}
     tracks = {}
     nextTrackId = 1
+    context.session = context.session or (tostring(context.id) .. ":" .. tostring(now()) .. ":" .. tostring(math.random(100000,999999)))
 
     local addresses = {}
     for address in component.list("ntm_radar") do
@@ -398,11 +404,22 @@ function runtime.stop()
     context = nil
 end
 
-function runtime.tick()
+function runtime.busy()
+    return false
 end
 
-function runtime.status()
-    return getStatus()
+function runtime.tick()
+    if now() - lastHardwareCheck < 10 then return end
+    local refreshed = {}
+    for address in component.list("ntm_radar") do
+        refreshed[#refreshed + 1] = {address=address,short=address:sub(1,8),proxy=component.proxy(address)}
+    end
+    radars = refreshed
+    lastHardwareCheck = now()
+end
+
+function runtime.status(detail)
+    return getStatus(detail)
 end
 
 function runtime.onMessage(remoteAddress, command)
