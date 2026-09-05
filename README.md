@@ -12,7 +12,7 @@ On CENTRAL:
 
 ```sh
 wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3a000ec9c04c761abe3d3b7c5f553dd1c1f799fe/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua central --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
+lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
 stratcom
 ```
 
@@ -20,7 +20,7 @@ On a field node, replace the role and ID as appropriate:
 
 ```sh
 wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3a000ec9c04c761abe3d3b7c5f553dd1c1f799fe/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua node strike SILO-S1 --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
+lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
 stratcom
 ```
 
