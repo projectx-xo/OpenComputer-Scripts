@@ -12,7 +12,7 @@ On CENTRAL:
 
 ```sh
 wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
+lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/release.lua"
 stratcom
 ```
 
@@ -20,7 +20,7 @@ On a field node, replace the role and ID as appropriate:
 
 ```sh
 wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
+lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/release.lua"
 stratcom
 ```
 
@@ -219,7 +219,7 @@ Configuration and saved operator preferences live outside release bundles. On di
 - `/home/stratcom/runtime/`: node current/previous runtime, versions and recovery files.
 - `/home/stratcom/releases/`: validated application bundles.
 
-The default source used when `--source` is omitted is `main`. These preview instructions explicitly select the review branch. After this release merges, change `source.txt` to the main `release.lua` URL if you want future main-branch releases.
+The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.1.3` manifest and its immutable source commit. Change `source.txt` to the main `release.lua` URL if you want future main-branch releases.
 
 ## Development and verification
 
