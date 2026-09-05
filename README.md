@@ -11,16 +11,16 @@ Run these in the **OpenOS shell**, one line at a time. These are script invocati
 On CENTRAL:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
 On a field node, replace the role and ID as appropriate:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
@@ -201,17 +201,7 @@ These commands require `COMBINED_INTEL`. A communications relay satellite or ano
 
 Connect an OpenComputers hologram projector to **CENTRAL's component network**. The `intel` node keeps its satellite relay; CENTRAL fetches the completed scan over the modem. No satellite relay is required at CENTRAL.
 
-Use CENTRAL **3.2.0** and intelligence runtime **1.2.0**. Existing service installations following this preview branch can run `lua /usr/bin/stratcom.lua update check` in the OpenOS shell. If `source.txt` still points to an older pinned release, set it to the current manifest URL from the installation instructions first. The downloaded bundle activates when idle; CENTRAL distributes the new intelligence runtime through the mesh. In the console, check `service status` for bundle 3.2.0 and `nodes` for intel runtime 1.2.0, or use `deploy INTEL-1` to retry a held deployment. No node reinstall or mod JAR change is required for this hologram update. Fresh installations use the installer above.
-
-For an existing 3.1.4 installation, enter `quit` in CENTRAL's console, then run these lines in the OpenOS shell:
-
-```sh
-echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/release.lua" > /home/stratcom/source.txt
-lua /usr/bin/stratcom.lua update check
-lua /usr/bin/stratcom.lua
-```
-
-Use `service status` until it reports `running 3.2.0`. Check `nodes` for INTEL-1 version 1.2.0 before scanning; `deploy INTEL-1` requests deployment if needed. `update status` and `logs` report download or activation errors.
+Holograms require CENTRAL **3.2.0 or newer** and intelligence runtime **1.2.0**. Follow [Updates and recovery](#updates-and-recovery) to install the current bundle. Check `nodes` for INTEL-1 version 1.2.0 before scanning; `deploy INTEL-1` requests deployment if needed.
 
 In CENTRAL's STRATCOM console:
 
@@ -264,6 +254,16 @@ This is the satellite's **sampled structure and finding bounds**, not a block-pe
 
 ## Updates and recovery
 
+To update an existing 3.1.4 or 3.2 installation to **3.3.0**, enter `quit` in CENTRAL's console, then run these lines in the OpenOS shell:
+
+```sh
+echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/release.lua" > /home/stratcom/source.txt
+lua /usr/bin/stratcom.lua update check
+lua /usr/bin/stratcom.lua
+```
+
+Use `service status` until it reports `running 3.3.0`. CENTRAL distributes strike runtime 3.1.0 to online strike nodes. Check `nodes`; if a deployment is held, use `deploy SILO-S1` or `deploy SILO-S2` and wait until their runtime version is 3.1.0. Field-node reinstalls are unnecessary for this update. The ABM polling fix runs on CENTRAL; the defense runtime remains 2.1.0. Large Launch Pad discovery additionally needs the mod v1.7 JAR on the server and clients.
+
 ```text
 update status
 update check
@@ -285,7 +285,7 @@ Configuration and saved operator preferences live outside release bundles. On di
 - `/home/stratcom/runtime/`: node current/previous runtime, versions and recovery files.
 - `/home/stratcom/releases/`: validated application bundles.
 
-The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.2.0` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
+The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.3.0` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
 
 ## Development and verification
 
@@ -308,7 +308,7 @@ The suites execute production code with simulated OpenOS hardware, filesystem, n
 To publish another bundle, commit its application files and version metadata first, then generate the manifest from that exact commit:
 
 ```sh
-python3 tools/make_release.py --ref <full-source-commit> --version 3.2.0
+python3 tools/make_release.py --ref <full-source-commit> --version 3.3.0
 ```
 
 Use a new version for every changed bundle. Commit `release.lua` separately so it can reference the immutable preceding source commit. A checksum validates transfer integrity; it is not a signature. Installers and update channels must come from the repository you trust.
