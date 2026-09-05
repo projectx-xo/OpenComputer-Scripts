@@ -11,7 +11,7 @@ Run these in the **OpenOS shell**, one line at a time. These are script invocati
 On CENTRAL:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/842054ed95ff0805546a881dc275e7f4a5237813/install.lua" /tmp/stratcom-install.lua
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/install.lua" /tmp/stratcom-install.lua
 lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
 stratcom
 ```
@@ -19,7 +19,7 @@ stratcom
 On a field node, replace the role and ID as appropriate:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/842054ed95ff0805546a881dc275e7f4a5237813/install.lua" /tmp/stratcom-install.lua
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/4909b1c07d4c90a05e55a326dac9d3948dc90109/install.lua" /tmp/stratcom-install.lua
 lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
 stratcom
 ```

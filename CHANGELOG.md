@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.3
+
+- Retry updater staging when OpenOS reports a network failure as the literal `nil` error.
+
 ## 3.1.2
 
 - Refresh a stale installed updater automatically when it returns an empty failure during installation.
