@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.2
+
+- Refresh a stale installed updater automatically when it returns an empty failure during installation.
+
 ## 3.1.0
 
 - Display completed combined-intelligence scans automatically on a hologram attached to CENTRAL, using scan data from remote intel nodes over the modem mesh.
