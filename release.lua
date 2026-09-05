@@ -1,13 +1,13 @@
 return {
-    version = "3.4.1",
-    ref = "6512a398ea9cedae90e9ed8558124f408a304865",
+    version = "3.4.2",
+    ref = "f42a0e480cba6896d781e6c867654cbca6558e4f",
     files = {
-        ["central/central.lua"] = {size = 101146, checksum = "aa647204"},
+        ["central/central.lua"] = {size = 101146, checksum = "30e27205"},
         ["central/hologram.lua"] = {size = 19242, checksum = "128e2c92"},
         ["bootstrap/bootstrap.lua"] = {size = 28575, checksum = "8ea1e803"},
-        ["runtime/manifest.lua"] = {size = 423, checksum = "8ede68ef"},
+        ["runtime/manifest.lua"] = {size = 423, checksum = "8fec68f0"},
         ["runtime/strike.lua"] = {size = 16523, checksum = "f3879542"},
-        ["runtime/launchpad.lua"] = {size = 5812, checksum = "a2bcc030"},
+        ["runtime/launchpad.lua"] = {size = 5906, checksum = "0b51e505"},
         ["runtime/radar.lua"] = {size = 12163, checksum = "92582058"},
         ["runtime/intel.lua"] = {size = 10247, checksum = "18f76c5f"},
         ["service/stratcom.lua"] = {size = 10348, checksum = "7a6c3a82"},
