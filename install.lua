@@ -40,7 +40,10 @@ if not ok then
         -- Same trust boundary as the downloaded installer. The full release below
         -- is pinned and checked before any installed helper or app is replaced.
         local parts,size={},0
-        for part in assert(require('internet').request(source:gsub('release%.lua$','service/update.lua'))) do
+        -- string.gsub returns the replacement count as a second value. Keep it
+        -- out of internet.request, whose second argument is the request body.
+        local updaterURL = source:gsub('release%.lua$','service/update.lua')
+        for part in assert(require('internet').request(updaterURL)) do
             size=size+#part;assert(size<131072,'updater too large');parts[#parts+1]=part
         end
         chunk=assert(load(table.concat(parts),'@update-bootstrap','t',_ENV))

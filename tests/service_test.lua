@@ -137,6 +137,25 @@ function tests.offline_install_bootstraps_local_updater_without_network()
  eq(h.files['/home/stratcom/runtime/current.lua'],'saved runtime')
  eq(h.files['/home/stratcom/runtime/version.txt'],'saved version');eq(h.http(),0)
 end
+function tests.fresh_online_install_passes_nil_request_body_to_openos_internet_api()
+ local h=harness();local branch='https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/'
+ local raw=release(h,'fresh');h.net[branch..'release.lua']=raw;h.net[branch..'service/update.lua']=sources.update
+ h.mods['stratcom.update']=nil;h.env.package={loaded={}};h.env.print=function()end
+ h.env.loadfile=function(path)
+  if path=='service/update.lua' then return nil end
+  return load(h.files[path] or '',path,'t',h.env)
+ end
+ h.mods.shell={execute=function()return true end};h.mods['stratcom.service']={start=function()return true end}
+ local calls=0
+ h.mods.internet.request=function(url,body)
+  calls=calls+1;assert(body==nil,'OpenOS internet.request received gsub replacement count as body')
+  local content=h.net[url];assert(content,'missing fixture for '..url);local sent=false
+  return function()if sent then return end;sent=true;return content end
+ end
+ local install=assert(load(read('install.lua'),'install','t',h.env))
+ install('node','radar','R1','--source',branch..'release.lua')
+ assert(calls>=1,'fallback updater was not fetched')
+end
 function tests.local_bundle_rejects_corrupt_files()
  local h=harness();localBundle(h);h.files['/media/release/runtime/radar.lua']='broken'
  local v,e=h.u.stageLocal('/media/release');eq(v,nil);assert(e);eq(h.u.current(),nil);eq(h.http(),0)
