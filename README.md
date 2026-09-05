@@ -11,16 +11,16 @@ Run these in the **OpenOS shell**, one line at a time. These are script invocati
 On CENTRAL:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
 On a field node, replace the role and ID as appropriate:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
@@ -236,7 +236,7 @@ hologram select all
 
 Finding numbers match `scan INTEL-1 results`: coral arrows mark missiles, amber diamonds mark launchers/equipment, violet diamonds mark hatches, and white marks the selected finding. Co-located missile and launcher symbols remain at the same scan coordinate with separate labels. Unselected inferred regions are hidden to reduce clutter; select their finding number to locate them. Markers remain visible through the projection and across cuts so a hidden object is still locatable.
 
-This is **captured block geometry at half-block resolution**, not a textured or animated copy of the remote world. Rooms, openings, slab heights and stair shapes are retained to that resolution. Thin shapes are approximated; custom tile/entity models such as the loaded missile are represented by findings. Natural terrain classification is a filter; turn it on when inspecting a stone/earth structure. Unloaded chunks stay empty, and status reports geometry coverage. No chunks are force-loaded. The capture adds about 13 seconds at 20 TPS. Clients build a cached surface mesh; pathological geometry is capped at 50,000 quads with an on-table notice to use a tighter cut.
+This is **captured block geometry at half-block resolution**, not a textured or animated copy of the remote world. Rooms, openings, slab heights and stair shapes are retained to that resolution. Glass is rendered separately so windows remain visible in the facade. Thin shapes are approximated; custom tile/entity models such as the loaded missile are represented by findings. Natural terrain classification is a filter; turn it on when inspecting a stone/earth structure. Unloaded chunks stay empty, and status reports geometry coverage. No chunks are force-loaded. The capture adds about 13 seconds at 20 TPS. Clients build a cached surface mesh; pathological geometry is capped at 50,000 quads with an on-table notice to use a tighter cut.
 
 The table retains its displayed snapshot across reloads. `hologram show INTEL-1` reloads that node's latest announced result; `hologram clear` clears it. An obsolete snapshot reference is rejected instead of silently displaying different data. The scan's source dimension must remain loaded when selecting it.
 
@@ -300,7 +300,7 @@ This is the satellite's **sampled structure and finding bounds**, not a block-pe
 To update an existing installation to **3.4.0**, enter `quit` in CENTRAL's console, then run these lines in the OpenOS shell:
 
 ```sh
-echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/release.lua" > /home/stratcom/source.txt
+echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/release.lua" > /home/stratcom/source.txt
 lua /usr/bin/stratcom.lua update check
 lua /usr/bin/stratcom.lua
 ```
