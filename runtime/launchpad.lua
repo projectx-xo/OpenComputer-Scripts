@@ -3,6 +3,7 @@ local serialization = require("serialization")
 
 local context = nil
 local launchPad = nil
+local launchPadAddress = nil
 local inventory = nil
 local armed = false
 local inventoryCache = nil
@@ -15,7 +16,7 @@ local ABM_CENTRAL_ID = "hbm:item.missile_anti-ballistic"
 local function findComponent(componentType)
     local address = component.list(componentType)()
     if not address then return nil end
-    return component.proxy(address)
+    return component.proxy(address), address
 end
 
 local function startsWith(value, prefix)
@@ -81,10 +82,9 @@ local function getStatus()
     if tier == nil then tier = -1 end
 
     local position
-    if type(launchPad.getPos) == "function" then
-        local ok, x, y, z = pcall(launchPad.getPos)
-        if ok then position = {x=x, y=y, z=z} end
-    end
+    -- A cached proxy can omit getPos even while the component accepts it.
+    local ok, x, y, z = pcall(component.invoke, launchPadAddress, "getPos")
+    if ok then position = {x=x, y=y, z=z} end
 
     return {
         position = position,
@@ -111,7 +111,7 @@ local runtime = {}
 
 function runtime.start(ctx)
     context = assert(ctx, "runtime context is required")
-    launchPad = findComponent("ntm_launch_pad")
+    launchPad, launchPadAddress = findComponent("ntm_launch_pad")
     inventory = findComponent("inventory_controller")
     inventoryCache = nil
     armed = false

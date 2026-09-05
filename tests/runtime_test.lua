@@ -14,7 +14,11 @@ local function loadRuntime(path, devices)
         local addresses = {}; for address, entry in pairs(devices) do if entry.kind == kind then addresses[#addresses + 1] = address end end
         table.sort(addresses); local i = 0
         return function() i = i + 1; return addresses[i] end
-    end, proxy = function(address) return assert(devices[address], 'missing device').proxy end}
+    end, proxy = function(address) return assert(devices[address], 'missing device').proxy end,
+    invoke = function(address, method, ...)
+        local device=assert(devices[address], 'missing device')
+        return assert((device.callbacks or device.proxy)[method], 'missing method')(...)
+    end}
     local modules = {component = component, serialization = {serialize = serialize, unserialize = function(v)return assert(load('return '..v,'data','t',{}))()end},
         computer = {uptime = function() return t end}, event = {timer = function(_, fn) timer = fn; return 1 end, cancel = function() timer = nil end}}
     local env = setmetatable({require = function(n) return assert(modules[n], n) end}, {__index = _G})
@@ -38,6 +42,17 @@ test('defense status reports pad coordinates and tolerates missing or failed get
     local pos=r.status().position;assert(pos.x==10 and pos.y==56 and pos.z==1800)
     p.getPos=function()error('unavailable')end
     assert(r.status().position==nil and r.status().ready)
+end)
+
+test('defense obtains position directly when the proxy omits getPos',function()
+    local p=pad()
+    local devices={p={kind='ntm_launch_pad',proxy=p,callbacks={getPos=function()return 599,56,1767 end}}}
+    local r,ctx=loadRuntime('runtime/launchpad.lua',devices)
+    ctx.role='defense';r.start(ctx)
+    assert(p.getPos==nil)
+    local pos=r.status().position;assert(pos.x==599 and pos.y==56 and pos.z==1767)
+    devices.p.callbacks.getPos=function()error('disconnected')end
+    assert(r.status().position==nil,'failed callback retained stale coordinates')
 end)
 
 test('custom Large Launch Pads use their designator and custom callbacks',function()

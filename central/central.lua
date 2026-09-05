@@ -27,7 +27,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.4.1"
+local VERSION = "3.4.2"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6

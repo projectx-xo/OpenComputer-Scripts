@@ -1,4 +1,4 @@
-# STRATCOM 3.4.1
+# STRATCOM 3.4.2
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 
@@ -143,6 +143,8 @@ confirm STRIKE
 The full syntax is `counterstrike <class> <count> [site-id] [node] [interval-seconds]`. `launchsite <id>` shows the origin estimate and confidence. Payload classes still come from the saved catalog; use `payloads <node>` and `classify <item-id> <class>` for unclassified missiles. The latest suggestion lasts for the CENTRAL session; recorded site IDs remain saved across restarts.
 
 ### ABM acquisition range
+
+CENTRAL 3.4.2 ships defense runtime 2.2.1, which calls `getPos` directly by component address. This handles cached proxies that omit the method despite the pad accepting it. Update CENTRAL, then `sync` and `deploy ABM-A1`; no mod update or helper reinstall is needed when upgrading from a complete 3.4.1 installation.
 
 Automatic defense holds fire until the observed target is strictly less than 1,000 blocks from the ABM launch pad in 3D, including altitude. CENTRAL checks before arming and again on the ARM reply; an invalidated engagement is disarmed. Missing pad coordinates or stale target/readiness data hold fire. `defense status` shows the range policy and warns when pad position is unavailable. Range holds appear in operational alerts. This is a launch-distance check, not a guarantee of seeker lock after the missile's activation delay; HBM also excludes Stealth Missiles from ABM acquisition.
 
