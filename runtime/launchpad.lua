@@ -80,7 +80,14 @@ local function getStatus()
 
     if tier == nil then tier = -1 end
 
+    local position
+    if type(launchPad.getPos) == "function" then
+        local ok, x, y, z = pcall(launchPad.getPos)
+        if ok then position = {x=x, y=y, z=z} end
+    end
+
     return {
+        position = position,
         armed = armed,
         ready = launchPad.canLaunch(),
         tier = tier,

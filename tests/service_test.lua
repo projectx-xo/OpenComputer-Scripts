@@ -253,4 +253,15 @@ function tests.update_waits_for_inflight_operator_command()
  h.step(10);eq(h.u.current(),'old')
  h.step(40);eq(h.u.current(),'new');local reply=assert(s.result(id));eq(reply.ok,true);eq(reply.text,'finished')
 end
+function tests.operational_alerts_survive_detach_and_have_independent_bounded_cursors()
+ local h=harness();local signals=0
+ h.mods.computer.pushSignal=function(name)eq(name,'stratcom_alert');signals=signals+1 end
+ installed(h,'local o=...;o.ready();for i=1,55 do o.alert("[DEFENSE] event "..i)end;while not o.stopping() do require("event").pull(0.1)end')
+ local s=service(h);assert(s.start());h.step(3)
+ local batch,cursor,missed=s.alerts(0);eq(#batch,50);eq(cursor,55);eq(missed,5);eq(signals,55)
+ eq(batch[1].id,6);assert(batch[50].text:find('event 55',1,true))
+ eq(#s.alerts(cursor),0);eq(#s.alerts(0),50)
+ batch[1].text='changed';assert(s.alerts(0)[1].text~='changed','consumer changed retained alerts')
+ assert(s.stop());h.step(5);eq(#s.alerts(0),50)
+end
 for n,t in pairs(tests)do t();print('PASS '..n)end

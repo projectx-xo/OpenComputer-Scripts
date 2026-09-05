@@ -12,6 +12,57 @@ local function test(name, fn)
     if not ok then failures = failures + 1 end
 end
 
+test('ABM range uses all three axes and rejects unavailable or stale coordinates',function()
+    local check=extract('abmInRange','historyPush',{now=function()return 100 end,RADAR_TRACK_STALE_AFTER=10})
+    local node={status={position={x=0,y=50,z=0}}}
+    local track={x=600,y=850,z=0,lastUpdate=100}
+    assert(not check(node,track),'exactly 1000 blocks is outside the seeker acquisition radius')
+    track.y=849;assert(check(node,track),'in-range target held')
+    track.y=1051;track.x=0;assert(not check(node,track),'altitude ignored')
+    track.y=50;track.lastUpdate=80;assert(not check(node,track),'stale target accepted')
+    track.lastUpdate=100;track.y=0/0;assert(not check(node,track),'NaN accepted')
+    assert(not check({},track),'old runtime without position accepted')
+    assert(not check({status={position=42}},track),'malformed position accepted')
+end)
+
+test('automatic engagement waits for range before sending ARM',function()
+    local sent,allowed=0,false
+    local track={key='R:1',x=0,z=0}
+    local run=extract('createEngagement','evaluateTrackForDefense',{
+        abmReady=function()return true,{}end,abmInRange=function()return allowed,'TARGET_OUT_OF_RANGE'end,
+        now=function()return 100 end,activeEngagements={},DEFENSE_LEAD_SECONDS=2,
+        sendOperational=function()sent=sent+1 end,print=function()end})
+    assert(not run(track,{closest=0,t=5}) and sent==0)
+    allowed=true;assert(run(track,{closest=0,t=5}) and sent==1)
+end)
+
+test('ARM acknowledgement rechecks range and disarms when contact moved out',function()
+    local sent,state={},nil
+    local engagement={state='ARMING',trackKey='R:1',targetX=0,targetZ=0}
+    local env={ABM_NODE_ID='ABM-A1',pendingArm=engagement,getNode=function()return {}end,nodeOnline=function()return true end,
+        radarTracks={['R:1']={}},defense={auto=true},abmReady=function()return true end,
+        abmInRange=function()return false,'TARGET_OUT_OF_RANGE'end,
+        sendOperational=function(_,cmd)sent[#sent+1]=cmd end,
+        finishEngagement=function(_,s)state=s end,now=function()return 100 end,print=function()end}
+    local run=extract('launchPendingEngagement','createEngagement',env)
+    run();assert(state=='ABORTED' and #sent==1 and sent[1]=='DISARM')
+    sent={};env.abmInRange=function()return true end
+    run();assert(#sent==1 and sent[1]=='LAUNCH')
+end)
+
+test('launch origin needs low-altitude ascending observations, not just radar visibility',function()
+    local sites=0
+    local evaluate=extract('evaluateLaunchSiteCandidate','nextMessageId',{
+        LAUNCH_SITE_MAX_ACQUIRE_Y=160,LAUNCH_SITE_MIN_CLIMB=35,LAUNCH_SITE_MIN_DEPARTURE=40,
+        LAUNCH_SITE_CONFIRM_SAMPLES=2,horizontalDistance=function(x,z,a,b)return math.sqrt((a-x)^2+(b-z)^2)end,
+        recordLaunchSite=function()sites=sites+1;return {id=7}end})
+    local track={typeId=1,firstX=0,firstY=56,firstZ=0,x=50,y=100,z=0,vy=10}
+    evaluate(track);assert(sites==0)
+    track.y=110;evaluate(track);assert(sites==1 and track.launchSiteId==7)
+    evaluate(track);assert(sites==1)
+    evaluate({typeId=1,firstY=200,y=300});assert(sites==1,'high acquisition invented a launch origin')
+end)
+
 test('slow status replies are not invalidated by the next background poll',function()
     local clock, serial, sent=0,0,0
     local node={claimed=true,runtimeState='running'}

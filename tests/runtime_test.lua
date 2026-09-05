@@ -29,6 +29,17 @@ local function pad()
         getTier = function() return 20 end, canLaunch = function() return true end, launch = function() return true end}
 end
 
+test('defense status reports pad coordinates and tolerates missing or failed getPos',function()
+    local p=pad()
+    local r,ctx=loadRuntime('runtime/launchpad.lua',{p={kind='ntm_launch_pad',proxy=p}})
+    ctx.role='defense';r.start(ctx)
+    assert(r.status().position==nil)
+    p.getPos=function()return 10,56,1800 end
+    local pos=r.status().position;assert(pos.x==10 and pos.y==56 and pos.z==1800)
+    p.getPos=function()error('unavailable')end
+    assert(r.status().position==nil and r.status().ready)
+end)
+
 test('custom Large Launch Pads use their designator and custom callbacks',function()
     local coords, launched
     local custom={getEnergyInfo=function()return 10,10 end,getContents=function()return 0,0,'',0,0,'',50,50 end,

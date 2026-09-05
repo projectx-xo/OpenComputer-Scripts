@@ -15,12 +15,19 @@ local function print(...)
     local parts = {}
     for i = 1, select("#", ...) do parts[i] = tostring(select(i, ...)) end
     local line = table.concat(parts, "\t")
-    if commandOutput then table.insert(commandOutput, line)
+    local operational = line:match("^%[DEFENSE%]") or line:match("^%[COUNTERSTRIKE%]")
+        or line:match("^%[RADAR%] POSSIBLE LAUNCH SITE")
+        or (line:match("^%[RADAR%].* ACQUIRED ") and not line:find(" ACQUIRED PLAYER ", 1, true))
+    if operational and options.alert then pcall(options.alert, line) end
+    if commandOutput then
+        table.insert(commandOutput, line)
+        -- Modem/timer callbacks can run while an operator command waits for its reply.
+        if operational and options.log then options.log(line) end
     elseif options.log then options.log(line)
     else consolePrint(line) end
 end
 
-local VERSION = "3.4.0"
+local VERSION = "3.4.1"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -939,6 +946,24 @@ local function abmReady()
     return true, node
 end
 
+local function abmInRange(node, track)
+    local position = node and node.status and node.status.position
+    if type(position) ~= "table" then return false, "ABM_POSITION_UNAVAILABLE" end
+    if not track or not track.lastUpdate or now() - track.lastUpdate > RADAR_TRACK_STALE_AFTER then
+        return false, "TARGET_STALE"
+    end
+    local distance2 = 0
+    for _, axis in ipairs({"x", "y", "z"}) do
+        local a, b = tonumber(position[axis]), tonumber(track[axis])
+        if not a or not b or a ~= a or b ~= b or math.abs(a) == math.huge or math.abs(b) == math.huge then
+            return false, "POSITION_INVALID"
+        end
+        distance2 = distance2 + (a - b) ^ 2
+    end
+    if distance2 >= 1000 * 1000 then return false, "TARGET_OUT_OF_RANGE" end
+    return true
+end
+
 local function historyPush(entry)
     table.insert(engagementHistory, entry)
     while #engagementHistory > 30 do table.remove(engagementHistory, 1) end
@@ -973,6 +998,15 @@ local function launchPendingEngagement()
         return
     end
 
+    local track = radarTracks[engagement.trackKey]
+    local ready, reason = abmReady()
+    local inRange, rangeReason = abmInRange(node, track)
+    if not ready or not inRange or track.friendly == true or not defense.auto then
+        sendOperational(node, "DISARM")
+        finishEngagement(engagement, "ABORTED", not ready and reason or not inRange and rangeReason or "DEFENSE_CANCELLED")
+        return
+    end
+
     engagement.state = "LAUNCHING"
     engagement.launchSentAt = now()
     print("[DEFENSE] " .. ABM_NODE_ID .. " engaging " .. engagement.trackKey
@@ -991,6 +1025,16 @@ local function createEngagement(track, approach)
         track.lastDefenseHoldReason = "ABM_BUSY"
         return false
     end
+
+    local inRange, reason = abmInRange(nodeOrReason, track)
+    if not inRange then
+        if track.lastDefenseHoldReason ~= reason then
+            print("[DEFENSE] Holding " .. track.key .. " - " .. reason)
+        end
+        track.lastDefenseHoldReason = reason
+        return false
+    end
+    track.lastDefenseHoldReason = nil
 
     local targetX = track.x + (track.vx or 0) * DEFENSE_LEAD_SECONDS
     local targetZ = track.z + (track.vz or 0) * DEFENSE_LEAD_SECONDS
@@ -1709,6 +1753,8 @@ local function printDefenseStatus()
     print("ABM runtime:   " .. tostring(abm and abm.runtimeState or "---"))
     print("ABM ready:     " .. tostring(ready) .. (ready and "" or (" (" .. tostring(reason) .. ")")))
     print("ABM missile:   " .. tostring(abm and abm.missileName or "---"))
+    print("Acquire range: <1000 blocks (3D from launch pad)")
+    if not (abm and abm.status and abm.status.position) then print("Range hold:    ABM position unavailable; update defense runtime / check getPos") end
     print("Status age:    " .. (abm and abm.lastStatus and string.format("%.1fs",now()-abm.lastStatus) or "no response yet"))
     if abm and abm.statusError then print("Status error:  " .. abm.statusError) end
     print("Active engage: " .. tostring(pendingArm and pendingArm.trackKey or "none"))

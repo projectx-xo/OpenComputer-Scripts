@@ -1,4 +1,4 @@
-# STRATCOM 3.4.0
+# STRATCOM 3.4.1
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 
@@ -11,16 +11,16 @@ Run these in the **OpenOS shell**, one line at a time. These are script invocati
 On CENTRAL:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
 On a field node, replace the role and ID as appropriate:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
@@ -71,7 +71,9 @@ Inside the console, `quit`, EOF and Ctrl+C detach. `service stop` explicitly sto
 
 Node runtime intent is separate: `stop SILO-S1` and `maintenance SILO-S1 on` on CENTRAL persist across computer restarts. `start SILO-S1` and `maintenance SILO-S1 off` resume operation. CENTRAL's saved explicit preference is authoritative when it manages that node. Local node consoles also support `start`, `stop` and `maintenance`.
 
-Background messages go to a bounded log. They do not overwrite the console prompt. Use `logs` to read recent events. `status` waits for a response and reports a timeout when fresh data is unavailable. Commands and confirmations are never replayed after a restart.
+Routine background messages go to a bounded log. Operational radar acquisitions, possible launch sites and automatic-defense engagement updates also appear immediately as `[ALERT]` messages with a short tone while the console is attached. Alerts preserve the current input and cursor position and remain visible while a command waits for a reply. Reattaching shows the retained alert history with timestamps; `logs` provides recent event details. The service retains 50 alerts independently of the 200-line general log; it reports when older alerts have expired. A radar acquisition means a contact was detected, not that its exact launch time or origin is known.
+
+The live-alert fix changes `central/central.lua`, `service/stratcom.lua` and `service/console.lua`. Update CENTRAL's stable service helpers using the installer with the service stopped, as well as installing the patched application bundle; application-only updates do not replace those helpers. Radar and defense node runtimes do not need replacement for this notification fix. `status` waits for a response and reports a timeout when fresh data is unavailable. Commands and confirmations are never replayed after a restart.
 
 ### CENTRAL commands
 
@@ -139,6 +141,14 @@ confirm STRIKE
 ```
 
 The full syntax is `counterstrike <class> <count> [site-id] [node] [interval-seconds]`. `launchsite <id>` shows the origin estimate and confidence. Payload classes still come from the saved catalog; use `payloads <node>` and `classify <item-id> <class>` for unclassified missiles. The latest suggestion lasts for the CENTRAL session; recorded site IDs remain saved across restarts.
+
+### ABM acquisition range
+
+Automatic defense holds fire until the observed target is strictly less than 1,000 blocks from the ABM launch pad in 3D, including altitude. CENTRAL checks before arming and again on the ARM reply; an invalidated engagement is disarmed. Missing pad coordinates or stale target/readiness data hold fire. `defense status` shows the range policy and warns when pad position is unavailable. Range holds appear in operational alerts. This is a launch-distance check, not a guarantee of seeker lock after the missile's activation delay; HBM also excludes Stealth Missiles from ABM acquisition.
+
+This change requires the patched CENTRAL application and defense `runtime/launchpad.lua`, which now reports the pad's `getPos()` coordinates. An older runtime or pad without that callback cannot qualify automatic fire. The live-alert changes additionally require reinstalling CENTRAL's stable service helpers. Included in CENTRAL 3.4.1 with defense runtime 2.2.0.
+
+A possible launch site is recorded only when a missile is first observed at Y ≤ 160 and subsequently climbs at least 35 blocks and departs at least 40 blocks horizontally, with two qualifying ascending observations. Radar visibility at a higher altitude does not establish an origin. Use `launchsites` for recorded estimates and `logs` / `engagements` for recent activity.
 
 ### Stale ABM status
 
@@ -300,7 +310,7 @@ This is the satellite's **sampled structure and finding bounds**, not a block-pe
 To update an existing installation to **3.4.0**, enter `quit` in CENTRAL's console, then run these lines in the OpenOS shell:
 
 ```sh
-echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/8f71833f5cc8d8331abda474c8f3944eb46ed599/release.lua" > /home/stratcom/source.txt
+echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua" > /home/stratcom/source.txt
 lua /usr/bin/stratcom.lua update check
 lua /usr/bin/stratcom.lua
 ```
@@ -328,7 +338,7 @@ Configuration and saved operator preferences live outside release bundles. On di
 - `/home/stratcom/runtime/`: node current/previous runtime, versions and recovery files.
 - `/home/stratcom/releases/`: validated application bundles.
 
-The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.4.0` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
+The default source used when `--source` is omitted is `main`. These preview instructions follow the preview branch; each release manifest pins an immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
 
 ## Development and verification
 
@@ -351,7 +361,7 @@ The suites execute production code with simulated OpenOS hardware, filesystem, n
 To publish another bundle, commit its application files and version metadata first, then generate the manifest from that exact commit:
 
 ```sh
-python3 tools/make_release.py --ref <full-source-commit> --version 3.4.0
+python3 tools/make_release.py --ref <full-source-commit> --version 3.4.1
 ```
 
 Use a new version for every changed bundle. Commit `release.lua` separately so it can reference the immutable preceding source commit. A checksum validates transfer integrity; it is not a signature. Installers and update channels must come from the repository you trust.

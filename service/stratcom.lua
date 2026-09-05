@@ -9,10 +9,27 @@ local state, failures, stopRequested, restartRequested = 'stopped', 0, false, fa
 local readyAt, busy, candidate, updateState = nil, false, nil, 'idle'
 local logs, queue, replies, sequence = {}, {}, {}, 0
 local activeCommand, lastCommand = nil, 0
+local alerts, alertSequence = {}, 0
 local function now() return computer.uptime() end
 local function log(s)
     logs[#logs+1]=string.format('[%.1f] %s',now(),tostring(s))
     if #logs>200 then table.remove(logs,1) end
+end
+local function alert(text)
+    alertSequence=alertSequence+1
+    alerts[#alerts+1]={id=alertSequence,text=string.format('[%.1f] %s',now(),tostring(text))}
+    if #alerts>50 then table.remove(alerts,1) end
+    if computer.pushSignal then computer.pushSignal('stratcom_alert') end
+end
+-- Cursor-based reads let attached consoles catch up independently without consuming each other's alerts.
+function M.alerts(after)
+    after=tonumber(after) or 0
+    local batch={}
+    for _,entry in ipairs(alerts) do
+        if entry.id>after then batch[#batch+1]={id=entry.id,text=entry.text} end
+    end
+    local missed=#alerts>0 and math.max(0,alerts[1].id-after-1) or 0
+    return batch,alertSequence,missed
 end
 local function config()
     local f,e=loadfile(root..'/service-config.lua'); assert(f,e)
@@ -63,7 +80,7 @@ local function run()
         worker=thread.create(function()
             local ok,e=pcall(function()
                 local chunk=assert(loadfile(dir..(c.kind=='central' and '/central/central.lua' or '/bootstrap/bootstrap.lua')))
-                chunk({appDir=dir,log=log,ready=function()readyAt=now();state='running' end,
+                chunk({appDir=dir,log=log,alert=alert,ready=function()readyAt=now();state='running' end,
                     stopping=function()return stopRequested or restartRequested end,
                     setBusy=function(value)busy=not not value end,
                     nextCommand=function()local request=table.remove(queue,1);if request then activeCommand=request.id end;return request end,

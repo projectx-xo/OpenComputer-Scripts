@@ -3,6 +3,20 @@ local event = require('event')
 local computer = require('computer')
 local term = require('term')
 local args = {...}
+local alertCursor=0
+local function readAlerts()
+    if not service.alerts then return '' end
+    local batch,nextCursor,missed=service.alerts(alertCursor)
+    alertCursor=nextCursor
+    local lines={}
+    if (missed or 0)>0 then lines[#lines+1]='[ALERT] '..missed..' older alerts expired; check logs.' end
+    for _,entry in ipairs(batch) do lines[#lines+1]='[ALERT] '..entry.text end
+    if #lines>0 and computer.beep then pcall(computer.beep,1000,0.1) end
+    return table.concat(lines,'\n')
+end
+local function showAlerts()
+    local text=readAlerts();if text~='' then print(text) end
+end
 local function execute(line)
     local ok,text=service.command(line)
     if text~=nil then print(text);return end
@@ -10,6 +24,7 @@ local function execute(line)
     if not id then print(e);return end
     local deadline=computer.uptime()+60
     while computer.uptime()<deadline do
+        showAlerts()
         local reply=service.result(id)
         if reply then print((reply.ok and '' or 'ERROR: ')..reply.text);return end
         local signal=event.pull(0.1)
@@ -30,7 +45,23 @@ end
 local ok,e=service.start();if not ok then print(e);return end
 print('STRATCOM console. quit or Ctrl+C detaches; service stop stops the application.')
 local history={}
+-- OpenOS term.read accepts cursor methods on its history table. Handle the wake-up
+-- inside the input reader so no detached thread writes over an active edit.
+function history:handle(name,...)
+    local text=readAlerts()
+    if text~='' then
+        local data,index,length,hindex,cache=self.data,self.index,self.len,self.hindex,self.cache
+        self:move(-self.index)
+        self:echo(self.clear)
+        self:echo('\n'..text..'\nstratcom> ')
+        self:update()
+        self:update(data,index-length)
+        self.hindex,self.cache=hindex,cache
+    end
+    return self.super.handle(self,name,...)
+end
 while true do
+    showAlerts()
     io.write('stratcom> ')
     local success,line=pcall(term.read,history)
     if not success or not line then break end
