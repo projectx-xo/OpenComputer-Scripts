@@ -27,6 +27,23 @@ end
 if fs.exists(root..'/service-config.lua') then
     assert(assert(loadfile(root..'/service-config.lua'))().kind==kind, 'existing service kind differs')
 end
+local function loadRemoteUpdater()
+    local chunk=loadfile('service/update.lua')
+    if chunk then
+        local localUpdate=chunk()
+        if localUpdate then return localUpdate end
+    end
+    -- Same trust boundary as the downloaded installer. The full release below
+    -- is pinned and checked before any installed helper or app is replaced.
+    local parts,size={},0
+    -- string.gsub returns the replacement count as a second value. Keep it
+    -- out of internet.request, whose second argument is the request body.
+    local updaterURL = source:gsub('release%.lua$','service/update.lua')
+    for part in assert(require('internet').request(updaterURL)) do
+        size=size+#part;assert(size<131072,'updater too large');parts[#parts+1]=part
+    end
+    return assert(load(table.concat(parts),'@update-bootstrap','t',_ENV))()
+end
 local ok,update
 if bundle then
     -- The copied archive has the same trust boundary as this installer.
@@ -35,24 +52,18 @@ else
     ok,update=pcall(require,'stratcom.update')
 end
 if not ok then
-    local chunk=loadfile('service/update.lua')
-    if not chunk then
-        -- Same trust boundary as the downloaded installer. The full release below
-        -- is pinned and checked before any installed helper or app is replaced.
-        local parts,size={},0
-        -- string.gsub returns the replacement count as a second value. Keep it
-        -- out of internet.request, whose second argument is the request body.
-        local updaterURL = source:gsub('release%.lua$','service/update.lua')
-        for part in assert(require('internet').request(updaterURL)) do
-            size=size+#part;assert(size<131072,'updater too large');parts[#parts+1]=part
-        end
-        chunk=assert(load(table.concat(parts),'@update-bootstrap','t',_ENV))
-    end
-    update=chunk()
+    update=loadRemoteUpdater()
 end
 local version,err
 if bundle then version,err=update.stageLocal(bundle,print) else version,err=update.stage(source,print) end
-assert(version,err)
+if not version and err==nil and not bundle then
+    -- Older installed helpers could return nil without an error after a
+    -- partial download. Refresh the helper from the requested source and
+    -- retry so an upgrade does not fail with an unhelpful "nil" assertion.
+    update=loadRemoteUpdater()
+    version,err=update.stage(source,print)
+end
+assert(version,err or 'update staging failed')
 local dir=update.directory(version)
 local helpers={['service/update.lua']='/usr/lib/stratcom/update.lua',['service/stratcom.lua']='/usr/lib/stratcom/service.lua',
     ['service/rc.lua']='/etc/rc.d/stratcom.lua',['service/console.lua']='/usr/bin/stratcom.lua'}
