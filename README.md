@@ -201,7 +201,7 @@ These commands require `COMBINED_INTEL`. A communications relay satellite or ano
 
 ### Native HBM projection table (3.4.0)
 
-Install mod **tjHBM-NTM-v1.8** on the server and clients, update CENTRAL to **3.4.0**, and check that `INTEL-1` runs intelligence runtime **1.3.0** (`deploy INTEL-1` if needed). Place an **Intelligence Projection Table** in the command room and put an OpenComputers adapter against its block, wired to CENTRAL. Leave room above it for a projection up to six blocks across/high by default. The satellite ground station stays at INTEL-1.
+Install mod **tjHBM-NTM-v1.9** on the server and clients, update CENTRAL to **3.4.0**, and check that `INTEL-1` runs intelligence runtime **1.3.0** (`deploy INTEL-1` if needed). Version 1.9 fixes dotted outlines and keeps HBM mineral deposits in the terrain layer; run a fresh scan after updating. Place an **Intelligence Projection Table** in the command room and put an OpenComputers adapter against its block, wired to CENTRAL. Leave room above it for a projection up to six blocks across/high by default. The satellite ground station stays at INTEL-1.
 
 The table is in HBM's missile creative tab and has an assembly-machine recipe. Its OC component is `ntm_intel_projector`. If CENTRAL has no saved projector binding, one native table is preferred automatically. If you previously bound an OC hologram, run `components ntm_intel_projector` in the OpenOS shell, then `hologram bind <full-address>` in STRATCOM.
 
