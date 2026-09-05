@@ -3,7 +3,7 @@ return {
     roles = {
         intel = {version = "1.3.0", path = "runtime/intel.lua"},
         defense = {
-            version = "2.2.1",
+            version = "2.3.0",
             path = "runtime/launchpad.lua",
         },
         strike = {
@@ -11,7 +11,7 @@ return {
             path = "runtime/strike.lua",
         },
         radar = {
-            version = "1.1.0",
+            version = "1.2.0",
             path = "runtime/radar.lua",
         },
     },

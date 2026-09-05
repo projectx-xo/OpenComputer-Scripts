@@ -86,7 +86,10 @@ local function getStatus()
     local ok, x, y, z = pcall(component.invoke, launchPadAddress, "getPos")
     if ok then position = {x=x, y=y, z=z} end
 
+    local targetingOk, targeting, dimension = pcall(component.invoke, launchPadAddress, "getTargetingInfo")
     return {
+        entityTargeting = targetingOk and targeting == true,
+        dimension = targetingOk and dimension or nil,
         position = position,
         armed = armed,
         ready = launchPad.canLaunch(),
@@ -170,6 +173,23 @@ function runtime.onMessage(remoteAddress, command, arg1, arg2)
     if command == "DISARM" then
         armed = false
         context.send(remoteAddress, "ACK", "DISARM", true)
+        return
+    end
+
+    if command == "LAUNCH_ENTITY" then
+        if not armed then context.send(remoteAddress, "ERROR", "DISARMED"); return end
+        local ok, target = pcall(serialization.unserialize, arg1 or "")
+        if not ok or type(target) ~= "table" or type(target.entityId) ~= "number"
+            or target.entityId % 1 ~= 0 or type(target.entityUuid) ~= "string" or #target.entityUuid ~= 36
+            or type(target.dimension) ~= "number" or target.dimension % 1 ~= 0 then
+            armed = false
+            context.send(remoteAddress, "ERROR", "INVALID_TARGET"); return
+        end
+        local invoked, success, reason = pcall(component.invoke, launchPadAddress, "launchTracked",
+            target.entityId, target.entityUuid, target.dimension)
+        armed = false
+        context.send(remoteAddress, "LAUNCH_RESULT", invoked and success == true, target.entityId,
+            invoked and reason or "TARGET_CALLBACK_FAILED")
         return
     end
 

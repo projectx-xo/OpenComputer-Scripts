@@ -27,7 +27,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.4.2"
+local VERSION = "3.5.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -797,6 +797,8 @@ local function applyRadarTrack(node, track)
         sequence = track.sequence,
         evaluatedSequence = previous and previous.evaluatedSequence,
         evaluatedUpdate = previous and previous.evaluatedUpdate,
+        entityId = track.entityId, entityUuid = track.entityUuid, dimension = track.dimension,
+        lastDefenseHoldReason = previous and previous.lastDefenseHoldReason,
         key = key,
         station = node.id,
         id = track.id,
@@ -946,7 +948,19 @@ local function abmReady()
     return true, node
 end
 
+local function hasEntityTarget(node, track)
+    return node and node.status and node.status.entityTargeting == true and track
+        and type(track.entityId) == "number" and track.entityId % 1 == 0
+        and type(track.entityUuid) == "string" and #track.entityUuid == 36
+        and type(track.dimension) == "number" and track.dimension % 1 == 0
+end
+
 local function abmInRange(node, track)
+    if hasEntityTarget(node, track) then
+        if node.status.dimension ~= track.dimension then return false, "WRONG_DIMENSION" end
+        if not track.lastUpdate or now() - track.lastUpdate > RADAR_TRACK_STALE_AFTER then return false, "TARGET_STALE" end
+        return true
+    end
     local position = node and node.status and node.status.position
     if type(position) ~= "table" then return false, "ABM_POSITION_UNAVAILABLE" end
     if not track or not track.lastUpdate or now() - track.lastUpdate > RADAR_TRACK_STALE_AFTER then
@@ -1007,12 +1021,24 @@ local function launchPendingEngagement()
         return
     end
 
+    if engagement.entityTarget and (not hasEntityTarget(node, track)
+        or track.entityUuid ~= engagement.entityTarget.entityUuid
+        or track.entityId ~= engagement.entityTarget.entityId or track.dimension ~= engagement.entityTarget.dimension) then
+        sendOperational(node, "DISARM")
+        finishEngagement(engagement, "ABORTED", "TARGET_CHANGED")
+        return
+    end
+
     engagement.state = "LAUNCHING"
     engagement.launchSentAt = now()
     print("[DEFENSE] " .. ABM_NODE_ID .. " engaging " .. engagement.trackKey
         .. " target X=" .. math.floor(engagement.targetX + 0.5)
         .. " Z=" .. math.floor(engagement.targetZ + 0.5))
-    sendOperational(node, "LAUNCH", engagement.targetX, engagement.targetZ)
+    if engagement.entityTarget then
+        sendOperational(node, "LAUNCH_ENTITY", serialization.serialize(engagement.entityTarget))
+    else
+        sendOperational(node, "LAUNCH", engagement.targetX, engagement.targetZ)
+    end
 end
 
 local function createEngagement(track, approach)
@@ -1039,6 +1065,8 @@ local function createEngagement(track, approach)
     local targetX = track.x + (track.vx or 0) * DEFENSE_LEAD_SECONDS
     local targetZ = track.z + (track.vz or 0) * DEFENSE_LEAD_SECONDS
     local engagement = {
+        entityTarget = hasEntityTarget(nodeOrReason, track) and {
+            entityId=track.entityId, entityUuid=track.entityUuid, dimension=track.dimension} or nil,
         trackKey = track.key,
         station = track.station,
         trackId = track.id,
@@ -1753,8 +1781,9 @@ local function printDefenseStatus()
     print("ABM runtime:   " .. tostring(abm and abm.runtimeState or "---"))
     print("ABM ready:     " .. tostring(ready) .. (ready and "" or (" (" .. tostring(reason) .. ")")))
     print("ABM missile:   " .. tostring(abm and abm.missileName or "---"))
-    print("Acquire range: <1000 blocks (3D from launch pad)")
-    if not (abm and abm.status and abm.status.position) then print("Range hold:    ABM position unavailable; update defense runtime / check getPos") end
+    print("Targeting:     " .. (abm and abm.status and abm.status.entityTargeting and "Entity handoff (when radar supplies identity)" or "Coordinate / seeker fallback"))
+    print("Acquire range: <1000 blocks for coordinate fallback")
+    if not (abm and abm.status and (abm.status.position or abm.status.entityTargeting)) then print("Range hold:    ABM position unavailable; update defense runtime / check getPos") end
     print("Status age:    " .. (abm and abm.lastStatus and string.format("%.1fs",now()-abm.lastStatus) or "no response yet"))
     if abm and abm.statusError then print("Status error:  " .. abm.statusError) end
     print("Active engage: " .. tostring(pendingArm and pendingArm.trackKey or "none"))

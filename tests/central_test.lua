@@ -1,5 +1,6 @@
 -- Run from the repository root with Lua 5.2+; hardware boundaries are simulated.
 local function extract(first, following, env)
+    if not env.hasEntityTarget then env.hasEntityTarget = function() return false end end
     local f = assert(io.open('central/central.lua')); local source = f:read('*a'); f:close()
     local a = assert(source:find('local function ' .. first .. '(', 1, true), first .. ' missing')
     local b = assert(source:find('local function ' .. following .. '(', a + 1, true), following .. ' missing')
@@ -61,6 +62,34 @@ test('launch origin needs low-altitude ascending observations, not just radar vi
     track.y=110;evaluate(track);assert(sites==1 and track.launchSiteId==7)
     evaluate(track);assert(sites==1)
     evaluate({typeId=1,firstY=200,y=300});assert(sites==1,'high acquisition invented a launch origin')
+end)
+
+test('entity handoff bypasses search range but retains freshness and dimension checks',function()
+    local env={now=function()return 100 end,RADAR_TRACK_STALE_AFTER=10}
+    env.hasEntityTarget=extract('hasEntityTarget','abmInRange',{})
+    local check=extract('abmInRange','historyPush',env)
+    local node={status={entityTargeting=true,dimension=0}}
+    local track={entityId=5,entityUuid='12345678-1234-1234-1234-123456789abc',dimension=0,lastUpdate=100,x=5000,y=2000,z=0}
+    assert(check(node,track),'handoff incorrectly uses pad distance')
+    track.dimension=1;assert(not check(node,track));track.dimension=0
+    track.lastUpdate=80;assert(not check(node,track));track.lastUpdate=100
+    node.status.entityTargeting=false;assert(not check(node,track),'old pad bypassed range gate')
+end)
+
+test('handoff sends the captured identity and aborts an identity change during ARM',function()
+    local target={entityId=5,entityUuid='12345678-1234-1234-1234-123456789abc',dimension=0}
+    local node={status={entityTargeting=true,dimension=0}}
+    local engagement={state='ARMING',trackKey='R:1',targetX=5000,targetZ=0,entityTarget=target}
+    local track={entityId=5,entityUuid=target.entityUuid,dimension=0}
+    local sent,state
+    local env={ABM_NODE_ID='ABM',pendingArm=engagement,getNode=function()return node end,nodeOnline=function()return true end,
+        radarTracks={['R:1']=track},defense={auto=true},abmReady=function()return true end,
+        abmInRange=function()return true end,hasEntityTarget=extract('hasEntityTarget','abmInRange',{}),
+        sendOperational=function(_,cmd,arg)sent={cmd,arg}end,serialization={serialize=function(t)return t end},
+        finishEngagement=function(_,s)state=s end,now=function()return 100 end,print=function()end}
+    local run=extract('launchPendingEngagement','createEngagement',env)
+    run();assert(sent[1]=='LAUNCH_ENTITY' and sent[2]==target)
+    engagement.state='ARMING';track.entityId=6;run();assert(sent[1]=='DISARM' and state=='ABORTED')
 end)
 
 test('slow status replies are not invalidated by the next background poll',function()
@@ -157,6 +186,14 @@ test('a restarted radar cannot inherit an old track identity', function()
     assert(saved and not saved.friendly, 'friendly identity leaked across restart')
     local duplicate = apply(node, {id = 1, session = 'new', sequence = 1, x = 999})
     assert(not duplicate or duplicate.x == 5, 'duplicate overwrote newer observation')
+end)
+
+test('new radar observations retain the existing range-hold reason',function()
+    local tracks={['R:1']={session='A',sequence=1,lastDefenseHoldReason='TARGET_OUT_OF_RANGE'}}
+    local apply=extract('applyRadarTrack','applyRadarStatus',{
+        now=function()return 100 end,radarTracks=tracks,radarTrackKey=function()return 'R:1'end,radarTypeName=function()return 'TIER1'end})
+    local track=apply({id='R'},{id=1,session='A',sequence=2,x=0,y=2000,z=0})
+    assert(track.lastDefenseHoldReason=='TARGET_OUT_OF_RANGE','range-hold alert repeats on every observation')
 end)
 
 test('summary status retains tracked objects', function()

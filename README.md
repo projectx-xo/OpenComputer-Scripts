@@ -1,4 +1,4 @@
-# STRATCOM 3.4.2
+# STRATCOM 3.5.0
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 
@@ -141,6 +141,14 @@ confirm STRIKE
 ```
 
 The full syntax is `counterstrike <class> <count> [site-id] [node] [interval-seconds]`. `launchsite <id>` shows the origin estimate and confidence. Payload classes still come from the saved catalog; use `payloads <node>` and `classify <item-id> <class>` for unclassified missiles. The latest suggestion lasts for the CENTRAL session; recorded site IDs remain saved across restarts.
+
+### Radar-to-ABM entity handoff (3.5.0)
+
+With the matching HBM entity-handoff patch installed on the server and clients, deploy radar runtime 1.2.0 and defense runtime 2.3.0 from CENTRAL 3.5.0. `sync`, `deploy RADAR-01` and `deploy ABM-A1` update those example nodes. Existing 3.4.1 notification helpers do not need another reinstall.
+
+The radar reports the selected contact's entity ID, UUID and dimension with its observation. CENTRAL preserves that identity through tracking and arming; the ABM pad resolves and validates the same living missile before launching with its target already assigned. Missing, dead, changed or other-dimension targets fail without a coordinate fallback. No additional chunks are loaded to resolve a target. Flight and subsequent reacquisition follow HBM's native radar-linked ABM behavior.
+
+`defense status` reports entity-handoff capability. For identity-bearing contacts on a capable pad, the 1,000-block seeker-search gate is bypassed, just as with native radar target assignment. Hostile/inbound confirmation, readiness, IFF and stale-observation checks still apply. Old radars or pads continue using the coordinate fallback below. Radar visibility and a launch acknowledgement never prove an interception.
 
 ### ABM acquisition range
 
@@ -363,7 +371,7 @@ The suites execute production code with simulated OpenOS hardware, filesystem, n
 To publish another bundle, commit its application files and version metadata first, then generate the manifest from that exact commit:
 
 ```sh
-python3 tools/make_release.py --ref <full-source-commit> --version 3.4.1
+python3 tools/make_release.py --ref <full-source-commit> --version 3.5.0
 ```
 
 Use a new version for every changed bundle. Commit `release.lua` separately so it can reference the immutable preceding source commit. A checksum validates transfer integrity; it is not a signature. Installers and update channels must come from the repository you trust.

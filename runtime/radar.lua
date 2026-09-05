@@ -73,6 +73,9 @@ local function cardinal(angle)
 end
 
 local function compatible(a, b)
+    if a.entityUuid or b.entityUuid then
+        if a.entityUuid ~= b.entityUuid or a.entityId ~= b.entityId or a.dimension ~= b.dimension then return false end
+    end
     if a.typeId ~= b.typeId or a.isPlayer ~= b.isPlayer then return false end
     if a.isPlayer then
         return tostring(a.name or "") == tostring(b.name or "")
@@ -151,11 +154,16 @@ local function readObservations()
         if okAmount then
             amount = tonumber(amount) or 0
             for index = 1, amount do
-                local ok, isPlayer, x, y, z, typeId, name =
-                    safeCall(radar.proxy, "getEntityAtIndex", index)
+                local ok, isPlayer, x, y, z, typeId, name, entityId, entityUuid, dimension =
+                    pcall(component.invoke, radar.address, "getTrackedEntityAtIndex", index)
+                if not ok then
+                    ok, isPlayer, x, y, z, typeId, name = safeCall(radar.proxy, "getEntityAtIndex", index)
+                    entityId, entityUuid, dimension = nil, nil, nil
+                end
 
-                if ok and x ~= nil then
+                if ok and isPlayer ~= nil and tonumber(x) and tonumber(y) and tonumber(z) then
                     mergeObservation(observations, {
+                        entityId = entityId, entityUuid = entityUuid, dimension = dimension,
                         isPlayer = isPlayer == true,
                         x = tonumber(x) or 0,
                         y = tonumber(y) or 0,
@@ -175,6 +183,7 @@ end
 
 local function publicTrack(track)
     return {
+        entityId = track.entityId, entityUuid = track.entityUuid, dimension = track.dimension,
         id = track.id,
         session = context.session,
         sequence = track.sequence,
@@ -216,6 +225,7 @@ local function acquireTrack(observation, timestamp)
     nextTrackId = nextTrackId + 1
 
     local track = {
+        entityId = observation.entityId, entityUuid = observation.entityUuid, dimension = observation.dimension,
         id = id,
         sequence = 1,
         typeId = observation.typeId,
@@ -275,7 +285,7 @@ local function findBestTrack(observation, timestamp)
     local bestDistance = nil
 
     for _, track in pairs(tracks) do
-        if not track.matched and track.typeId == observation.typeId
+        if not track.matched and compatible(track, observation) and track.typeId == observation.typeId
             and track.isPlayer == observation.isPlayer
         then
             local nameCompatible = not track.isPlayer
@@ -291,7 +301,7 @@ local function findBestTrack(observation, timestamp)
                     observation.x, observation.y, observation.z
                 )
 
-                if d <= MATCH_DISTANCE and (not bestDistance or d < bestDistance) then
+                if (observation.entityUuid or d <= MATCH_DISTANCE) and (not bestDistance or d < bestDistance) then
                     best = track
                     bestDistance = d
                 end

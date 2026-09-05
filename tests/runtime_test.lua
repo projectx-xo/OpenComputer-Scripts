@@ -174,6 +174,31 @@ test('radar observations carry session and increasing sample sequence', function
     r.stop()
 end)
 
+test('radar identity survives overlapping contacts and reaches the ABM callback',function()
+    local uuid='12345678-1234-1234-1234-123456789abc'
+    local x=5000
+    local radar={getAmount=function()return 2 end,getTrackedEntityAtIndex=function(i)
+        return false,x,2000,0,1,'MISSILE',i,i==1 and uuid or '22345678-1234-1234-1234-123456789abc',0
+    end}
+    local r,ctx,sent,tick=loadRuntime('runtime/radar.lua',{r={kind='ntm_radar',proxy=radar}})
+    r.start(ctx);tick(1);assert(r.status('full').activeTrackCount==2,'overlapping entities merged')
+    local first=assert(load('return '..sent[1][3]))().track
+    assert(first.entityId==1 and first.entityUuid==uuid and first.dimension==0)
+    x=6000;tick(2);assert(r.status('full').activeTrackCount==2,'fast entity lost identity')
+    local called=0;local p=pad()
+    p.getTargetingInfo=function()return true,0 end
+    p.launchTracked=function(id,u,dim)assert(id==1 and u==uuid and dim==0);called=called+1;return true end
+    local abm,c,replies=loadRuntime('runtime/launchpad.lua',{p={kind='ntm_launch_pad',proxy=p}})
+    c.role='defense';abm.start(c);assert(abm.status().entityTargeting)
+    abm.onMessage('C','LAUNCH_ENTITY',serialize(first));assert(called==0)
+    abm.onMessage('C','ARM');abm.onMessage('C','LAUNCH_ENTITY',serialize(first))
+    assert(called==1 and replies[#replies][2]=='LAUNCH_RESULT' and replies[#replies][3]==true and not abm.busy())
+    p.launchTracked=function()return false,'TARGET_LOST'end
+    abm.onMessage('C','ARM');abm.onMessage('C','LAUNCH_ENTITY',serialize(first))
+    assert(replies[#replies][3]==false and not abm.busy(),'lost target fell back to coordinate fire')
+    r.stop()
+end)
+
 test('intelligence commands reject other satellite types without starting', function()
     local starts=0
     local r,ctx,sent=loadRuntime('runtime/intel.lua',{sat={kind='ntm_satlink',proxy={
