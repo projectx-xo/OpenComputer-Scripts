@@ -1,4 +1,4 @@
-# STRATCOM 3.0
+# STRATCOM 3.1
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 
@@ -158,6 +158,44 @@ Wait for `COMPLETE` before reading results. Findings show classifications, coord
 
 These commands require `COMBINED_INTEL`. A communications relay satellite or another intelligence satellite type is rejected. The relay must be connected and tuned to the right frequency. If several `ntm_satlink` components are attached, set `satelliteAddress` in the node configuration to select one.
 
+## Command-room hologram
+
+Connect an OpenComputers hologram projector to **CENTRAL's component network**. The `intel` node keeps its satellite relay; CENTRAL fetches the completed scan over the modem. No satellite relay is required at CENTRAL.
+
+Use CENTRAL 3.1 and intelligence runtime 1.1. Existing service installations following this preview branch can run `stratcom update check`, then `stratcom update status`. The downloaded bundle activates when idle; CENTRAL distributes the new intelligence runtime through the mesh. Check `nodes` to confirm the intel runtime version, or use `deploy INTEL-1` to retry a held deployment. Fresh installations use the installer above.
+
+In CENTRAL's STRATCOM console:
+
+```text
+scan INTEL-1 508 1710
+scan INTEL-1 status
+hologram status
+```
+
+After `COMPLETE`, CENTRAL fetches and draws the model automatically. A scan started locally at the intel node also updates the command-room projector. Status reports `FETCHING`, `DRAWING`, or `DISPLAYED`, with the source node, scan summary and world blocks per voxel. The last completed display stays visible while another scan runs or downloads. With several intel nodes, a newly received completed scan selects the displayed source.
+
+Scans with no structural samples or equipment bounds clear the previous geometry and report `EMPTY`.
+
+```text
+hologram show INTEL-1
+hologram clear
+hologram bind <full-projector-address>
+```
+
+`show` selects or retries that node's latest announced completed scan. `clear` leaves the projector blank until a new scan arrives or you use `show`. A single projector is selected automatically. With several projectors, use `components hologram` in the OpenOS shell to list addresses, then `hologram bind` in STRATCOM; the binding is saved in CENTRAL's preferences. Missing projectors pause display work without blocking scan commands.
+
+The [OpenComputers hologram API](https://ocdoc.cil.li/component:hologram) supports **48 × 32 × 48 voxels**. Tier 2 adds three colors; Tier 1 uses one color for the same geometry:
+
+| Appearance on Tier 2 | Meaning |
+| --- | --- |
+| Cyan points | Sampled structural blocks with HBM blast resistance below 40 |
+| Amber points | Sampled structural blocks with HBM blast resistance 40 or higher |
+| Red outlines | Bounds of detected equipment or launch infrastructure |
+
+The model is centered and reduced uniformly when necessary, preserving proportions. Small models retain one world block per voxel. X, Y and Z map to the projector's local axes; physical projector orientation determines how that relates to the room. Existing projector scale/rotation settings are preserved.
+
+This is the satellite's **sampled structure and finding bounds**, not a block-perfect world copy. Unsampled terrain and blocks are not invented. The console remains the source for exact coordinates, confidence, target IDs and resistance values. The renderer supports the HBM limits of 8,192 structural samples and 128 findings, loads small pages, and writes at most 64 voxels per drawing step. Scan/session/request identities reject stale pages; missing replies get bounded retries and an explicit timeout.
+
 ## Updates and recovery
 
 ```text
@@ -192,6 +230,8 @@ lua tests/bootstrap_test.lua
 lua tests/central_test.lua
 lua tests/central_integration_test.lua
 lua tests/command_test.lua
+lua tests/hologram_test.lua
+lua tests/hologram_integration_test.lua
 lua tests/runtime_test.lua
 lua tests/service_test.lua
 ```
@@ -201,7 +241,7 @@ The suites execute production code with simulated OpenOS hardware, filesystem, n
 To publish another bundle, commit its application files and version metadata first, then generate the manifest from that exact commit:
 
 ```sh
-python3 tools/make_release.py --ref <full-source-commit> --version 3.0.0
+python3 tools/make_release.py --ref <full-source-commit> --version 3.1.0
 ```
 
 Use a new version for every changed bundle. Commit `release.lua` separately so it can reference the immutable preceding source commit. A checksum validates transfer integrity; it is not a signature. Installers and update channels must come from the repository you trust.

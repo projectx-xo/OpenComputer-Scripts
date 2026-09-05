@@ -20,7 +20,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.0.0"
+local VERSION = "3.1.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -102,6 +102,7 @@ end
 
 local modem = component.proxy(modemAddress)
 local nodes = {}
+local hologram, hologramAddress
 local desiredRuntimes = {}
 local payloadCatalog = {}
 local radarTracks = {}
@@ -132,7 +133,7 @@ local function now()
 end
 
 local function savePreferences()
-    local raw = serialization.serialize({nodes = nodePreferences, defense = defense, abmNode = ABM_NODE_ID})
+    local raw = serialization.serialize({nodes = nodePreferences, defense = defense, abmNode = ABM_NODE_ID, hologramAddress = hologramAddress})
     local path = PREFERENCES_PATH .. ".tmp"
     local f, err = io.open(path, "w")
     if not f then print("[CONFIG] Save failed: " .. tostring(err)); return false end
@@ -157,6 +158,7 @@ local function loadPreferences()
     if not ok or type(saved) ~= "table" then return end
     if type(saved.nodes) == "table" then nodePreferences = saved.nodes end
     if type(saved.abmNode) == "string" then ABM_NODE_ID = saved.abmNode end
+    if type(saved.hologramAddress) == "string" then hologramAddress = saved.hologramAddress end
     if type(saved.defense) == "table" then
         defense.protectX = tonumber(saved.defense.protectX)
         defense.protectZ = tonumber(saved.defense.protectZ)
@@ -845,6 +847,11 @@ local function applyRuntimeStatus(node, status)
     if not node or type(status) ~= "table" then return end
 
     node.status = status
+    if hologram and node.role == "intel" and status.satelliteType == "COMBINED_INTEL"
+        and status.scanState == "COMPLETE" and type(status.scanFrame) == "table"
+        and status.scanFrame.session == node.session then
+        hologram.offer(node.id, status.scanFrame)
+    end
     if status.radarStation == true then
         applyRadarStatus(node, status)
         node.lastStatus = now()
@@ -1234,6 +1241,17 @@ local function handleRuntimeEnvelope(envelope)
             applyRuntimeStatus(node, status)
             node.statusComplete = payload[3] or node.pendingStatus
             node.pendingStatus = nil
+        end
+    elseif responseType == "SCAN_COMPLETE" then
+        local frame = payload[2]
+        if hologram and node.role == "intel" and type(frame) == "table" and frame.session == node.session then
+            hologram.offer(node.id, frame)
+        end
+    elseif responseType == "SCAN_MODEL" then
+        local frame = payload[2]
+        if hologram and node.role == "intel" and node.session and type(frame) == "string"
+            and frame:sub(1, #node.session + 1) == node.session .. ":" then
+            hologram.receive(node.id, table.unpack(payload, 2, 7))
         end
     elseif responseType == "SCAN" or responseType == "SCAN_STATUS" or responseType == "SCAN_RESULTS"
         or responseType == "SCAN_STRUCTURE" or responseType == "HARDWARE" then
@@ -1933,6 +1951,7 @@ local function printHelp()
     print("  strike <node> <class> <count> <x> <z>")
     print("")
     print("Satellite: scan [node] <x> <z> | scan [node] status|results [page]|structure [page]")
+    print("Hologram:  hologram status | show <node> | clear | bind <projector-address>")
     print("Setup: doctor [node] | hardware <node> | map <node> <label> <pad> <inventory> <side> [slot]")
     print("  alias <node> <name> | maintenance <node> on|off | defense node <node>")
     print("  confirm LAUNCH|STRIKE | cancel")
@@ -1955,6 +1974,17 @@ local function execute(line)
             print("No matching unexpired confirmation.")
         else pending.action() end
     elseif command == "scan" then scanCommand(args)
+    elseif command == "hologram" then
+        if not hologram then print("Hologram viewer unavailable; update CENTRAL using the installer."); return end
+        local value = args[3]
+        if args[2] == "show" then local node = getNode(value); value = node and node.id or value end
+        local ok, text = hologram.command(args[2], value)
+        if ok and args[2] == "bind" then
+            hologramAddress = value
+            if not savePreferences() then print("Projector selected for this session; saving the binding failed.") end
+        end
+        if not ok then commandFailed = true end
+        print(text)
     elseif command == "doctor" then
         local node = getNode(args[2])
         if args[2] and not node then print("Node not found."); return end
@@ -2178,6 +2208,15 @@ local pruneTimer = event.timer(PRUNE_INTERVAL, pruneSeen, math.huge)
 local defenseTimer = event.timer(1, defenseTick, math.huge)
 
 loadPreferences()
+local hologramTimer
+if options.appDir then
+    local chunk, err = loadfile(options.appDir .. "/central/hologram.lua")
+    if chunk then
+        hologram = chunk()({component=component, now=now, log=print, address=hologramAddress,
+            send=function(id, ...) local node=getNode(id); return node and sendOperational(node, ...) end})
+        hologramTimer = event.timer(0.25, hologram.tick, math.huge)
+    else print("[HOLOGRAM] Viewer unavailable: " .. tostring(err)) end
+end
 loadPayloadCatalog()
 loadLaunchSites()
 printHeader()
@@ -2191,7 +2230,7 @@ while running do
     if options.stopping and options.stopping() then break end
     if pendingConfirmation and now() > pendingConfirmation.expires then pendingConfirmation = nil end
     if options.setBusy then
-        local busy = next(activeEngagements) ~= nil or pendingConfirmation ~= nil
+        local busy = next(activeEngagements) ~= nil or pendingConfirmation ~= nil or (hologram and hologram.busy())
         for _, node in pairs(nodes) do
             if node.deploying or (nodeOnline(node) and (node.armed or (node.armedCount or 0) > 0)) then busy = true end
         end
@@ -2220,6 +2259,7 @@ end
 
 defense.auto = false
 event.cancel(pruneTimer)
+if hologramTimer then event.cancel(hologramTimer) end
 event.cancel(defenseTimer)
 event.cancel(statusTimer)
 event.cancel(deploymentTimer)

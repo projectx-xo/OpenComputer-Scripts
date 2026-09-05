@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.0
+
+- Display completed combined-intelligence scans automatically on a hologram attached to CENTRAL, using scan data from remote intel nodes over the modem mesh.
+- Center and uniformly scale sampled structural blocks and equipment bounds; use three colors on Tier 2 and one color on Tier 1.
+- Add hologram status/show/clear/bind commands and save projector bindings in CENTRAL preferences.
+- Bound transfer pages, retries and drawing work; reject mismatched scan/session/request identities and leave scan commands operational without a projector.
+- Upgrade intelligence runtime to 1.1.0 and add full CENTRAL and node-to-projector integration tests.
+
 ## 3.0.0
 
 - Install CENTRAL and field nodes as OpenOS boot services; attach/detach a console without stopping their work.

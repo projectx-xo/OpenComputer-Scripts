@@ -7,7 +7,7 @@ import subprocess
 import zlib
 
 FILES = [
-    'central/central.lua', 'bootstrap/bootstrap.lua', 'runtime/manifest.lua',
+    'central/central.lua', 'central/hologram.lua', 'bootstrap/bootstrap.lua', 'runtime/manifest.lua',
     'runtime/strike.lua', 'runtime/launchpad.lua', 'runtime/radar.lua', 'runtime/intel.lua',
     'service/stratcom.lua', 'service/update.lua', 'service/rc.lua', 'service/console.lua', 'install.lua',
 ]
