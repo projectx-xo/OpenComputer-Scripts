@@ -84,11 +84,22 @@ local function observeScan()
     local _, state = progress(sat)
     if state ~= "COMPLETE" then scanFrame = nil; return sat end
     local summary = tostring(sat.intelSummary())
-    if not scanFrame or scanFrame.summary ~= summary or scanFrame.address ~= address then
+    local native
+    if sat.intelProjection then
+        local ready, frequency, dimension, id = sat.intelProjection()
+        if ready then
+            assert(type(id)=="string" and #id==36,"Invalid native snapshot ID")
+            native={frequency=integer(frequency,"Satellite frequency"),dimension=integer(dimension,"Scan dimension"),id=id}
+        end
+    end
+    local prior=scanFrame and scanFrame.native
+    local changed=(native and native.id or nil)~=(prior and prior.id or nil)
+        or (native and native.frequency or nil)~=(prior and prior.frequency or nil)
+    if not scanFrame or scanFrame.summary ~= summary or scanFrame.address ~= address or changed then
         frameSequence = frameSequence + 1
         local session = tostring(context.session or context.id)
         scanFrame = {id=session .. ":" .. frameSequence, sequence=frameSequence, session=session,
-            summary=summary, address=address, modelVersion=2}
+            summary=summary, address=address, modelVersion=2, native=native}
         context.send(nil, "SCAN_COMPLETE", scanFrame)
     end
     return sat

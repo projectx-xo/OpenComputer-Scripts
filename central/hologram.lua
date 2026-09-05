@@ -8,14 +8,18 @@ return function(options)
     local model, selectedFinding, view = nil, nil, "cutaway"
 
     local function projector()
-        local addresses={}
-        for address in component.list("hologram") do addresses[#addresses+1]=address end
+        local addresses, kinds, native={},{},{}
+        for address in component.list("ntm_intel_projector") do
+            addresses[#addresses+1]=address;native[#native+1]=address;kinds[address]="native"
+        end
+        for address in component.list("hologram") do addresses[#addresses+1]=address;kinds[address]="voxel" end
         if selected then
-            for _,address in ipairs(addresses) do if address==selected then return component.proxy(address),address end end
+            for _,address in ipairs(addresses) do if address==selected then return component.proxy(address),address,kinds[address] end end
             error("Selected projector disconnected: " .. selected)
         end
+        if #native>0 then addresses=native end
         if #addresses~=1 then error("Connect one hologram projector, or use hologram bind <address>") end
-        return component.proxy(addresses[1]),addresses[1]
+        return component.proxy(addresses[1]),addresses[1],kinds[addresses[1]]
     end
 
     local function fail(text)
@@ -225,8 +229,22 @@ return function(options)
             if j.stage=="device" then
                 if now()<nextDeviceCheck then return end
                 nextDeviceCheck=now()+5
-                local found,_,address=pcall(projector)
-                if not found then message="Waiting for projector: " .. tostring(_);return end
+                local found,device,address,kind=pcall(projector)
+                if not found then message="Waiting for projector: " .. tostring(device);return end
+                if kind=="native" then
+                    local ref=j.frame.native
+                    assert(type(ref)=="table" and type(ref.id)=="string" and #ref.id==36,
+                        "Native geometry unavailable: update/deploy the intel runtime and rescan with a combined satellite")
+                    for _,name in ipairs({"frequency","dimension"}) do
+                        assert(type(ref[name])=="number" and ref[name]%1==0 and math.abs(ref[name])<=2147483647,"Invalid native "..name)
+                    end
+                    local accepted,detail=device.showScan(ref.frequency,ref.dimension,ref.id)
+                    assert(accepted,detail or "Native table rejected the scan")
+                    j.native=true;j.address=address;model=j;job=nil
+                    displayed=j.node.." | "..tostring(detail);message=displayed
+                    if options.log then options.log("[HOLOGRAM] "..displayed) end
+                    return
+                end
                 j.address=address;j.stage="fetch"
             end
             if j.stage=="fetch" then
@@ -259,6 +277,13 @@ return function(options)
     end
 
     function viewer.status()
+        if model and model.native and not job then
+            local ok,status=pcall(function()
+                local device,address=projector();assert(address==model.address,"Selected projector changed")
+                return model.node.." | "..device.getStatus()
+            end)
+            return ok and status or ("ERROR: "..tostring(status))
+        end
         return message .. (displayed and message:sub(1,9)~="DISPLAYED" and message:sub(1,5)~="EMPTY"
             and (" | Previous display: " .. displayed) or "")
     end
@@ -268,6 +293,22 @@ return function(options)
     function viewer.command(action,arg)
         action=action or "status"
         if action=="status" then return true,viewer.status() end
+        if model and model.native and action~="show" and action~="bind" and action~="clear" then
+            local ok,accepted,detail=pcall(function()
+                if job then return false,"Wait for the new scan to load" end
+                local device,address=projector();assert(address==model.address,"Selected projector changed")
+                if action=="list" then
+                    local status,count=device.getStatus()
+                    assert(type(count)=="number" and count>=0 and count<=128 and count%1==0,"Invalid finding count")
+                    local lines={model.node.." | "..status}
+                    for index=1,count do lines[#lines+1]=device.getFinding(index) end
+                    return true,table.concat(lines,"\n")
+                end
+                return device.configure(action,tostring(arg or ""))
+            end)
+            if not ok then return false,tostring(accepted) end
+            return accepted,detail
+        end
         if action=="list" then
             if not model then return false,"Wait for a completed hologram model" end
             if model.frame.modelVersion~=2 then return false,"Deploy the updated intel runtime for typed findings" end
@@ -294,9 +335,11 @@ return function(options)
         elseif action=="bind" then
             local found=false
             for address in component.list("hologram") do if address==arg then found=true end end
+            for address in component.list("ntm_intel_projector") do if address==arg then found=true end end
             if not found then return false,"Projector address not found" end
             selected=arg
             if job then begin(job.node,job.frame) end
+            if model then begin(model.node,model.frame) end
             return true,"Projector selected: " .. arg
         elseif action=="clear" then
             local ok,err=pcall(function()local holo=projector();holo.clear()end)
@@ -304,7 +347,7 @@ return function(options)
             job=nil;model=nil;displayed=nil;message="CLEARED; waiting for a new scan or hologram show <node>"
             return true,message
         end
-        return false,"hologram status | list | select <number|all> | view cutaway|structure|findings | show <node> | clear | bind <address>"
+        return false,"hologram status | list | select <number|all> | view exterior|interior|cutaway | floor <Y|all> | cut <x:N|z:N|none> | terrain <on|off> | rotate <degrees> | scale <2-12> | show <node> | clear | bind <address>"
     end
     return viewer
 end

@@ -287,4 +287,44 @@ test('drawing work is bounded and unplugging the projector is recoverable',funct
     t.devices.holo=nil;assert(v.command('show','INTEL-1'));t.step()
     assert(v.status():find('projector',1,true),v.status())
 end)
+test('native projector receives exact completed reference without paging or voxel calls',function()
+    local t=setup();local shown,controls={},{}
+    t.sat.intelProjection=function()return true,42,0,'11111111-1111-1111-1111-111111111111' end
+    t.devices.native={kind='ntm_intel_projector',proxy={
+        showScan=function(...)shown[#shown+1]={...};return true,'DISPLAYED native' end,
+        configure=function(...)controls[#controls+1]={...};return true,'updated' end,
+        getStatus=function()return 'DISPLAYED native',1 end,
+        getFinding=function(index)assert(index==1);return '#1 MISSILE | 102,41,202' end,
+        clear=function()shown.cleared=true;return true end}}
+    local v=t.viewer();t.finish()
+    assert(#shown==1,'native table not selected')
+    assert(shown[1][1]==42 and shown[1][2]==0 and shown[1][3]=='11111111-1111-1111-1111-111111111111','wrong snapshot reference')
+    assert(t.state.requestCount==0 and t.state.writes==0,'native scene sent through voxel pages')
+    for _,c in ipairs({{'view','exterior'},{'view','interior'},{'floor','20'},{'cut','z:1709'},{'terrain','on'},{'rotate','90'},{'scale','8'},{'select','1'}})do
+        assert(v.command(c[1],c[2]));assert(controls[#controls][1]==c[1] and controls[#controls][2]==c[2])
+    end
+    local ok,text=v.command('list');assert(ok and text:find('#1 MISSILE',1,true),text)
+    assert(v.command('clear'));assert(shown.cleared)
+end)
+test('native snapshot identity notices a same-summary rescan between polls',function()
+    local t=setup();local id='11111111-1111-1111-1111-111111111111'
+    t.sat.intelProjection=function()return true,42,0,id end
+    t.state.state='COMPLETE';t.step();local first=t.runtime.status().scanFrame
+    id='22222222-2222-2222-2222-222222222222'
+    for _=1,5 do t.step()end
+    local second=t.runtime.status().scanFrame
+    assert(second.id~=first.id and second.native.id==id,'same-summary native rescan was lost')
+end)
+test('explicit OC binding wins over a connected native table',function()
+    local t=setup();t.devices.native={kind='ntm_intel_projector',proxy={showScan=function()error('explicit binding ignored')end}}
+    local v=t.viewer();assert(v.command('bind','holo'));t.finish()
+    assert(t.state.writes>0 and v.status():find('DISPLAYED',1,true),v.status())
+end)
+test('native table asks for a rescan when old results lack geometry',function()
+    local t=setup();local called=false
+    t.devices.native={kind='ntm_intel_projector',proxy={showScan=function()called=true end}}
+    local v=t.viewer();t.finish()
+    assert(not called and t.state.requestCount==0,'old sparse data was treated as complete geometry')
+    assert(v.status():lower():find('rescan',1,true),v.status())
+end)
 if failures>0 then error(failures..' hologram tests failed') end

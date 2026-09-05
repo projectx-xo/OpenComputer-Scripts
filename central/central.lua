@@ -20,7 +20,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.3.0"
+local VERSION = "3.4.0"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -2026,7 +2026,9 @@ local function printHelp()
     print("  counterstrike <class> <count> [site-id] [node] [interval-seconds]")
     print("")
     print("Satellite: scan [node] <x> <z> | scan [node] status|results [page]|structure [page]")
-    print("Hologram:  hologram status | list | select <number|all> | view cutaway|structure|findings")
+    print("Hologram:  hologram status | list | select <number|all> | view exterior|interior|cutaway")
+    print("HBM table: hologram floor <Y|all> | cut <x:N|z:N|none> | terrain <on|off>")
+    print("           hologram rotate <degrees> | scale <2-12> (OC views: cutaway|structure|findings)")
     print("           hologram show <node> | clear | bind <projector-address>")
     print("Setup: doctor [node] | hardware <node> | map <node> <label> <pad> <inventory> <side> [slot]")
     print("  alias <node> <name> | maintenance <node> on|off | defense node <node>")

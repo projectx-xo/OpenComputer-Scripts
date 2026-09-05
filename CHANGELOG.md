@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.4.0
+
+- Prefer HBM v1.8's native Intelligence Projection Table at CENTRAL. Intel runtime 1.3.0 announces an exact completed combined-satellite snapshot reference; dense geometry travels through the mod, without OC modem model pages.
+- Add exterior, interior, floor and side cuts, terrain visibility, rotation and projection size controls under `hologram`. Keep numbered finding selection and explicit projector binding; retain the OC voxel projector as a fallback.
+- Detect a completed same-coordinate, same-summary rescan by its native snapshot ID, even when polling misses its running state.
+- Older scans lack the dense capture and require a new combined scan. Native geometry approximates block bounds at half-block resolution; custom equipment remains typed coordinate markers.
+
 ## 3.3.0
 
 - Keep slow background status requests alive until their timeout instead of replacing their token every five seconds. Refresh stale ABM readiness on demand and show status age/errors.

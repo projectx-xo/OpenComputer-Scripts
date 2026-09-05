@@ -199,6 +199,49 @@ These commands require `COMBINED_INTEL`. A communications relay satellite or ano
 
 ## Command-room hologram
 
+### Native HBM projection table (3.4.0)
+
+Install mod **tjHBM-NTM-v1.8** on the server and clients, update CENTRAL to **3.4.0**, and check that `INTEL-1` runs intelligence runtime **1.3.0** (`deploy INTEL-1` if needed). Place an **Intelligence Projection Table** in the command room and put an OpenComputers adapter against its block, wired to CENTRAL. Leave room above it for a projection up to six blocks across/high by default. The satellite ground station stays at INTEL-1.
+
+The table is in HBM's missile creative tab and has an assembly-machine recipe. Its OC component is `ntm_intel_projector`. If CENTRAL has no saved projector binding, one native table is preferred automatically. If you previously bound an OC hologram, run `components ntm_intel_projector` in the OpenOS shell, then `hologram bind <full-address>` in STRATCOM.
+
+Run a **new combined scan**; older saved scans contain only sparse samples:
+
+```text
+scan INTEL-1 507 1709
+scan INTEL-1 status
+hologram status
+```
+
+The completed scan appears automatically. The table captures every Y level in the 64 × 64 footprint, with cyan architectural outlines and faint surfaces. Exterior mode shows the complete captured structure; terrain is hidden initially. Right-click the table for view, floor, cut-plane, rotation, size, terrain and finding controls, or use CENTRAL:
+
+```text
+hologram view exterior
+hologram view interior
+hologram floor 30
+hologram view cutaway
+hologram cut z:1709
+hologram cut x:508
+hologram cut none
+hologram terrain on
+hologram terrain off
+hologram rotate 90
+hologram scale 8
+hologram list
+hologram select 2
+hologram select all
+```
+
+`interior` initially removes the highest layer. `floor 30` shows Y ≤ 30; `floor all` restores all heights. A cut retains X or Z ≤ its world-coordinate value. `cutaway` initially opens the +Z side through the captured structure's center. Rotation is in degrees (−360..360); size is the longest projection dimension in Minecraft blocks (2..12). Clipping and finding selection preserve the coordinate transform. Terrain visibility changes the fitted extent.
+
+Finding numbers match `scan INTEL-1 results`: coral arrows mark missiles, amber diamonds mark launchers/equipment, violet diamonds mark hatches, and white marks the selected finding. Co-located missile and launcher symbols remain at the same scan coordinate with separate labels. Unselected inferred regions are hidden to reduce clutter; select their finding number to locate them. Markers remain visible through the projection and across cuts so a hidden object is still locatable.
+
+This is **captured block geometry at half-block resolution**, not a textured or animated copy of the remote world. Rooms, openings, slab heights and stair shapes are retained to that resolution. Thin shapes are approximated; custom tile/entity models such as the loaded missile are represented by findings. Natural terrain classification is a filter; turn it on when inspecting a stone/earth structure. Unloaded chunks stay empty, and status reports geometry coverage. No chunks are force-loaded. The capture adds about 13 seconds at 20 TPS. Clients build a cached surface mesh; pathological geometry is capped at 50,000 quads with an on-table notice to use a tighter cut.
+
+The table retains its displayed snapshot across reloads. `hologram show INTEL-1` reloads that node's latest announced result; `hologram clear` clears it. An obsolete snapshot reference is rejected instead of silently displaying different data. The scan's source dimension must remain loaded when selecting it.
+
+### OpenComputers voxel projector fallback
+
 Connect an OpenComputers hologram projector to **CENTRAL's component network**. The `intel` node keeps its satellite relay; CENTRAL fetches the completed scan over the modem. No satellite relay is required at CENTRAL.
 
 Holograms require CENTRAL **3.2.0 or newer** and intelligence runtime **1.2.0**. Follow [Updates and recovery](#updates-and-recovery) to install the current bundle. Check `nodes` for INTEL-1 version 1.2.0 before scanning; `deploy INTEL-1` requests deployment if needed.
@@ -254,7 +297,7 @@ This is the satellite's **sampled structure and finding bounds**, not a block-pe
 
 ## Updates and recovery
 
-To update an existing 3.1.4 or 3.2 installation to **3.3.0**, enter `quit` in CENTRAL's console, then run these lines in the OpenOS shell:
+To update an existing installation to **3.4.0**, enter `quit` in CENTRAL's console, then run these lines in the OpenOS shell:
 
 ```sh
 echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/22c830ae4cc2fcb10f83d08dd9a0e197838d5bde/release.lua" > /home/stratcom/source.txt
@@ -262,7 +305,7 @@ lua /usr/bin/stratcom.lua update check
 lua /usr/bin/stratcom.lua
 ```
 
-Use `service status` until it reports `running 3.3.0`. CENTRAL distributes strike runtime 3.1.0 to online strike nodes. Check `nodes`; if a deployment is held, use `deploy SILO-S1` or `deploy SILO-S2` and wait until their runtime version is 3.1.0. Field-node reinstalls are unnecessary for this update. The ABM polling fix runs on CENTRAL; the defense runtime remains 2.1.0. Large Launch Pad discovery additionally needs the mod v1.7 JAR on the server and clients.
+Use `service status` until it reports `running 3.4.0`. CENTRAL distributes intelligence runtime 1.3.0 to online intel nodes. Check `nodes`; if deployment is held, use `deploy INTEL-1`. Field-node reinstalls are unnecessary. Strike runtime remains 3.1.0 and defense remains 2.1.0. The native projection table additionally needs mod v1.8 on the server and clients, then a new combined scan.
 
 ```text
 update status
@@ -285,7 +328,7 @@ Configuration and saved operator preferences live outside release bundles. On di
 - `/home/stratcom/runtime/`: node current/previous runtime, versions and recovery files.
 - `/home/stratcom/releases/`: validated application bundles.
 
-The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.3.0` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
+The default source used when `--source` is omitted is `main`. These preview instructions pin the reviewed `3.4.0` manifest and its immutable source commit. To follow future releases on this preview branch, set `/home/stratcom/source.txt` to `https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua`. Use the main `release.lua` URL after the release is merged there.
 
 ## Development and verification
 
@@ -308,7 +351,7 @@ The suites execute production code with simulated OpenOS hardware, filesystem, n
 To publish another bundle, commit its application files and version metadata first, then generate the manifest from that exact commit:
 
 ```sh
-python3 tools/make_release.py --ref <full-source-commit> --version 3.3.0
+python3 tools/make_release.py --ref <full-source-commit> --version 3.4.0
 ```
 
 Use a new version for every changed bundle. Commit `release.lua` separately so it can reference the immutable preceding source commit. A checksum validates transfer integrity; it is not a signature. Installers and update channels must come from the repository you trust.
