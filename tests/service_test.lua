@@ -1,17 +1,41 @@
 local function read(p) local f=assert(io.open(p));local s=f:read('*a');f:close();return s end
 local sources={update=read('service/update.lua')}
+-- Optionally run the same tests with unmodified OpenOS buffer libraries.
+local openosBuffer
+local openosLib=os.getenv('OPENOS_LIB')
+if openosLib then
+ local modules={computer={freeMemory=function()return 1048576 end,uptime=os.clock},
+  unicode={len=string.len,sub=string.sub},package={delay=function()end}}
+ local env=setmetatable({require=function(n)return assert(modules[n],n)end,checkArg=function()end},{__index=_G})
+ openosBuffer=assert(loadfile(openosLib..'/buffer.lua','t',env))();modules.buffer=openosBuffer
+ assert(loadfile(openosLib..'/full_buffer.lua','t',env))()
+end
 local function harness()
  local files,net,threads={}, {}, {};local clock,http=0,0
  local env=setmetatable({}, {__index=_G})
  env.io={open=function(p,m)
   if m=='r' and files[p]==nil then return nil,'missing' end
   if m=='w' then files[p]='' end
-  return {read=function(_,fmt)return fmt=='*l' and files[p]:match('[^\n]+') or files[p]end,write=function(_,s)files[p]=files[p]..s;return true end,close=function()return true end}
+  if openosBuffer then
+   local position=1
+   return openosBuffer.new(m,{
+    read=function(_,n)if position>#files[p] then return end;local s=files[p]:sub(position,position+n-1);position=position+#s;return s end,
+    write=function(_,s)if files._flushFail==p then return nil,'disk full' end;files[p]=files[p]..s;return true end,
+    close=function()if files._closeFail==p then return nil,'close failed' end end})
+  end
+  return {read=function(_,fmt)return fmt=='*l' and files[p]:match('[^\n]+') or files[p]end,
+   write=function(_,s)files[p]=files[p]..s;return true end,
+   flush=function()if files._flushFail==p then return nil,'disk full' end;return true end,
+   close=function()if files._closeFail==p then return nil,'close failed' end end}
  end}
  local fs={exists=function(p)return files[p]~=nil end,makeDirectory=function(p)if files[p] then return nil,'already exists' end files[p]=true;return true end,remove=function(p)files[p]=nil;return true end,rename=function(a,b)if files[a]==nil then return nil,'missing' end files[b]=files[a];files[a]=nil;return true end}
  local mods={filesystem=fs,computer={uptime=function()return clock end},internet={request=function(url)http=http+1;local s=net[url];if not s then error('offline')end;return function()local x=s;s=nil;return x end end}}
  env.require=function(n)return assert(mods[n],n)end
- env.loadfile=function(p)return load(files[p]or'',p,'t',env)end
+ env.loadfile=function(p)
+  if p=='service/update.lua' then return load(sources.update,p,'t',env)end
+  if files[p]==nil then return nil,'missing' end
+  return load(files[p],p,'t',env)
+ end
  env.dofile=function(p)return assert(env.loadfile(p))()end
  mods.event={pull=function(t)coroutine.yield(t or 0.1)end}
  mods.thread={create=function(fn)local t={co=coroutine.create(fn)};function t:status()return self.dead and 'dead' or coroutine.status(self.co)=='dead' and 'dead' or 'running'end;function t:kill()self.dead=true end;function t:detach()self.detached=true;return self end;threads[#threads+1]=t;return t end}
@@ -22,12 +46,21 @@ end
 local function eq(a,b)assert(a==b,tostring(a)..' ~= '..tostring(b))end
 local paths={'central/central.lua','bootstrap/bootstrap.lua','runtime/manifest.lua','runtime/strike.lua','runtime/launchpad.lua','runtime/radar.lua','runtime/intel.lua','service/stratcom.lua','service/update.lua','service/rc.lua','service/console.lua','install.lua'}
 local sha=string.rep('a',40)
-local function release(h,v,app)
+local function release(h,v,app,overrides)
  local parts={'return {version="'..v..'",ref="'..sha..'",files={'}
- for _,p in ipairs(paths)do local s=p=='central/central.lua' and (app or 'return true')or (p=='runtime/manifest.lua' and 'return {roles={radar={path="runtime/radar.lua",version="1.0.0"}}}' or 'return {}');h.net['https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/'..sha..'/'..p]=s;parts[#parts+1]='["'..p..'"]={size='..#s..',checksum="'..h.u.checksum(s)..'"},'end
+ for _,p in ipairs(paths)do local s=(overrides or {})[p] or (p=='central/central.lua' and (app or 'return true')or (p=='runtime/manifest.lua' and 'return {roles={radar={path="runtime/radar.lua",version="1.0.0"}}}' or 'return {}'));h.net['https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/'..sha..'/'..p]=s;parts[#parts+1]='["'..p..'"]={size='..#s..',checksum="'..h.u.checksum(s)..'"},'end
  parts[#parts+1]='}}';h.net[h.u.defaultSource]=table.concat(parts);return table.concat(parts)
 end
 local tests={}
+function tests.write_failure_keeps_previous_file()
+ for _,fault in ipairs({'_flushFail','_closeFail'})do
+  local h=harness();local destination='/home/stratcom/current.txt'
+  h.files[destination]='old';h.files[fault]=destination..'.tmp'
+  local ok,err=pcall(h.u.write,destination,'new')
+  eq(ok,false);assert(tostring(err):find(fault=='_flushFail' and 'disk full' or 'close failed',1,true))
+  eq(h.files[destination],'old')
+ end
+end
 function tests.download_failure_retains_current()
  local h=harness();h.files['/home/stratcom/current.txt']='old';release(h,'new');h.net['https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/'..sha..'/runtime/radar.lua']=nil
  local b,e=h.u.stage();eq(b,nil);assert(e);eq(h.files['/home/stratcom/current.txt'],'old')
@@ -156,10 +189,10 @@ function tests.fresh_online_install_passes_nil_request_body_to_openos_internet_a
  install('node','radar','R1','--source',branch..'release.lua')
  assert(calls>=1,'fallback updater was not fetched')
 end
-function tests.install_refreshes_stale_updater_after_empty_failure()
+function tests.install_uses_source_updater_instead_of_installed_helper()
  local h=harness();local branch='https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/'
  local raw=release(h,'fresh');h.net[branch..'release.lua']=raw;h.net[branch..'service/update.lua']=sources.update
- h.mods['stratcom.update']={stage=function()return nil,'nil' end};h.env.package={loaded={}};h.env.print=function()end
+ h.mods['stratcom.update']={stage=function()error('installed updater must not run during reinstall')end};h.env.package={loaded={}};h.env.print=function()end
  h.env.loadfile=function(path)
   if path=='service/update.lua' then return nil end
   return load(h.files[path] or '',path,'t',h.env)
@@ -175,6 +208,27 @@ function tests.install_refreshes_stale_updater_after_empty_failure()
  assert(load(read('install.lua'),'install','t',h.env))('node','radar','R1','--source',branch..'release.lua')
  assert(fetched,'stale updater was not refreshed')
  eq(h.u.current(),'fresh')
+end
+function tests.central_install_starts_service_using_replaced_updater()
+ local h=harness()
+ release(h,'fresh','local o=...;o.ready();while not o.stopping() do require("event").pull(0.1)end',
+  {['service/update.lua']=sources.update,['service/stratcom.lua']=read('service/stratcom.lua')})
+ h.env.package={loaded={['stratcom.update']={recover=function()return nil,'old cached updater' end}}}
+ h.mods['stratcom.update']=nil;h.env.print=function()end
+ h.mods.shell={execute=function()return true end}
+ h.env.require=function(name)
+  local loaded=h.env.package.loaded
+  if loaded[name] then return loaded[name] end
+  if h.mods[name] then return h.mods[name] end
+  loaded[name]=assert(h.env.loadfile('/usr/lib/'..name:gsub('%.','/')..'.lua'))()
+  return loaded[name]
+ end
+ assert(load(read('install.lua'),'install','t',h.env))('central')
+ h.step(5)
+ eq(h.env.require('stratcom.service').status().state,'running')
+ eq(h.u.current(),'fresh');eq(h.u.pending(),nil)
+ assert(h.files['/usr/bin/stratcom.lua'],'console was not installed')
+ eq(h.files['/home/stratcom/config.lua'],nil)
 end
 function tests.local_bundle_rejects_corrupt_files()
  local h=harness();localBundle(h);h.files['/media/release/runtime/radar.lua']='broken'

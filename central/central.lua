@@ -138,8 +138,9 @@ local function savePreferences()
     local f, err = io.open(path, "w")
     if not f then print("[CONFIG] Save failed: " .. tostring(err)); return false end
     local ok = f:write(raw)
-    local closed = f:close()
-    if not ok or not closed then print("[CONFIG] Write failed; previous settings retained"); return false end
+    local flushed = f:flush()
+    local closed, closeErr = f:close()
+    if not ok or not flushed or closed == false or closeErr then print("[CONFIG] Write failed; previous settings retained"); return false end
     local backup = PREFERENCES_PATH .. ".bak"
     if filesystem.exists(backup) then filesystem.remove(backup) end
     if filesystem.exists(PREFERENCES_PATH) and not filesystem.rename(PREFERENCES_PATH, backup) then return false end

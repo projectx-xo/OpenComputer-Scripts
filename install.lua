@@ -44,25 +44,16 @@ local function loadRemoteUpdater()
     end
     return assert(load(table.concat(parts),'@update-bootstrap','t',_ENV))()
 end
-local ok,update
+local update
 if bundle then
     -- The copied archive has the same trust boundary as this installer.
-    update=assert(loadfile(bundle..'/service/update.lua'))();ok=true
+    update=assert(loadfile(bundle..'/service/update.lua'))()
 else
-    ok,update=pcall(require,'stratcom.update')
-end
-if not ok then
+    -- Reinstallation must use the corrected helper supplied with this source.
     update=loadRemoteUpdater()
 end
 local version,err
 if bundle then version,err=update.stageLocal(bundle,print) else version,err=update.stage(source,print) end
-if not version and (err==nil or err=='nil') and not bundle then
-    -- Older installed helpers could return nil without an error after a
-    -- partial download. Refresh the helper from the requested source and
-    -- retry so an upgrade does not fail with an unhelpful "nil" assertion.
-    update=loadRemoteUpdater()
-    version,err=update.stage(source,print)
-end
 assert(version,err or 'update staging failed')
 local dir=update.directory(version)
 local helpers={['service/update.lua']='/usr/lib/stratcom/update.lua',['service/stratcom.lua']='/usr/lib/stratcom/service.lua',
@@ -98,10 +89,10 @@ for _,name in ipairs(rcenv.enabled or {}) do if name=='stratcom' then enabled=tr
 if not enabled then assert(require('shell').execute('rc stratcom enable'), 'could not enable boot service') end
 if loaded then
     package.loaded['stratcom.service']=nil
-    package.loaded['stratcom.update']=nil
     local hasRC,rc=pcall(require,'rc')
     if hasRC and rc.loaded then rc.loaded.stratcom=nil end
 end
+package.loaded['stratcom.update']=nil
 local service=require('stratcom.service')
 assert(service.start())
 if not fresh and version~=update.current() then assert(service.apply(version)) end

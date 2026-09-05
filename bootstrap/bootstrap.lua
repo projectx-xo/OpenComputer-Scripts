@@ -87,9 +87,11 @@ local function writeText(path, value)
     local file, err = io.open(path, "w")
     if not file then return false, err end
     local ok, writeErr = file:write(tostring(value) .. "\n")
+    local flushed, flushErr = file:flush()
     local closed, closeErr = file:close()
     if not ok then return false, writeErr end
-    if closed == nil then return false, closeErr end
+    if not flushed then return false, flushErr end
+    if closed == false or closeErr then return false, closeErr end
     return true
 end
 
@@ -130,8 +132,9 @@ local function copyRuntime(source, destination)
     output, err = io.open(destination, "w")
     if not output then return false, err end
     local written, writeErr = output:write(data)
+    local flushed, flushErr = output:flush()
     local closed, closeErr = output:close()
-    if not written or not closed then return false, writeErr or closeErr end
+    if not written or not flushed or closed == false or closeErr then return false, writeErr or flushErr or closeErr end
     return true
 end
 
@@ -438,8 +441,10 @@ local function commitDeployment(version, transaction)
         abortDeployment()
     end
     if version ~= d.version or d.next ~= d.total + 1 then finish(false, "INCOMPLETE_OR_VERSION_MISMATCH"); return end
+    local flushed, flushErr = d.file:flush()
     local closed, closeErr = d.file:close(); d.file = nil
-    if not closed then finish(false, "CLOSE_FAILED: " .. tostring(closeErr)); return end
+    if not flushed then finish(false, "FLUSH_FAILED: " .. tostring(flushErr)); return end
+    if closed == false or closeErr then finish(false, "CLOSE_FAILED: " .. tostring(closeErr)); return end
     if d.checksum and string.lower(d.checksum) ~= string.format("%08x", d.b*65536+d.a) then finish(false, "CHECKSUM_MISMATCH"); return end
     local chunk, loadErr = loadfile(TEMP_RUNTIME)
     if not chunk then finish(false, "SYNTAX_ERROR: " .. tostring(loadErr)); return end

@@ -14,8 +14,13 @@ function M.write(path, text)
     local parent=path:match('^(.*)/')
     if not fs.exists(parent) then assert(fs.makeDirectory(parent)) end
     local f = assert(io.open(path .. '.tmp', 'w'))
-    local ok, err = f:write(text); local closed, closeErr = f:close()
-    assert(ok, err); assert(closed, closeErr)
+    local ok, err = f:write(text)
+    -- OpenOS close() returns no value on success and discards flush errors.
+    local flushed, flushErr = f:flush()
+    local closed, closeErr = f:close()
+    assert(ok, 'write '..path..': '..tostring(err))
+    assert(flushed, 'flush '..path..': '..tostring(flushErr))
+    assert(closed~=false and closeErr==nil, 'close '..path..': '..tostring(closeErr))
     assert(fs.rename(path .. '.tmp', path))
     return true
 end

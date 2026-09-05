@@ -2,13 +2,28 @@
 
 Automated tests run real STRATCOM scripts and modules with simulated OpenOS component, disk, modem and thread boundaries. They are useful regression tests, not a Minecraft emulator. No live-server latency or TPS improvement is claimed.
 
-The current release passed 65 scenarios under Lua 5.2.4 and Lua 5.3.6, plus syntax checks.
+The test suites run under Lua 5.2.4 and Lua 5.3.6, with syntax checks for both versions.
 
 ## Local checks
 
 Run every `tests/*_test.lua` using Lua 5.2 and Lua 5.3. Compile every shipped Lua file with the corresponding `luac -p`. The optional workflow in `docs/ci/lua-checks.yml` repeats those checks once installed under `.github/workflows/`.
 
 The tests include failure injection for missing downloads, bad checksums/syntax, interrupted application-pointer writes, interrupted node promotion, failed disk close, candidate startup/tick failure, delayed replies, retired radar sessions, stale samples, wrong deployment IDs and lost maintenance commands. Inventory and satellite tests use the HBM callback argument/return layouts read from the mod source.
+
+### OpenOS file compatibility
+
+OpenOS file `close()` returns no value on success. Its buffer close also discards a flush error, so file promotion must check `flush()` explicitly. The disk doubles model empty successful close returns; tests reject failed flush/close operations without replacing the previous file.
+
+To run the installer/service tests using OpenOS's unmodified buffer code, download these two libraries from the pinned upstream commit:
+
+```sh
+mkdir -p work/openos-io
+curl -fsSL https://raw.githubusercontent.com/MightyPirates/OpenComputers/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/buffer.lua -o work/openos-io/buffer.lua
+curl -fsSL https://raw.githubusercontent.com/MightyPirates/OpenComputers/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/core/full_buffer.lua -o work/openos-io/full_buffer.lua
+OPENOS_LIB=work/openos-io lua tests/service_test.lua
+```
+
+This uses the real buffer's read/write/flush/close implementation over a simulated filesystem component. Modem and thread boundaries remain simulated. It covers fresh CENTRAL installation through service startup, node runtime installation, reinstalling with a cached older updater, and failed writes.
 
 ## In-game smoke procedure
 

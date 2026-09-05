@@ -24,7 +24,7 @@ local fs={exists=function(path)return files[path]~=nil end,makeDirectory=functio
 local function fileOpen(path,mode)
     if mode=='r' and files[path]==nil then return nil end
     if mode=='w' then files[path]='' end
-    return {read=function()return files[path]end,write=function(_,value)files[path]=files[path]..value;return true end,close=function()return true end}
+    return {read=function()return files[path]end,write=function(_,value)files[path]=files[path]..value;return true end,flush=function()return true end,close=function()end}
 end
 local modem={open=function()end,close=function()closed=closed+1 end,broadcast=function(port,marker,encoded)
     local e=unserialize(encoded);local p=e.payload;traffic[#traffic+1]=e

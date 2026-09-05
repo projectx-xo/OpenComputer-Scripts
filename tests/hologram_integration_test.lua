@@ -33,7 +33,7 @@ local fs={exists=function(path)return files[path]~=nil end,makeDirectory=functio
     remove=function(path)files[path]=nil;return true end,rename=function(a,b)files[b]=files[a];files[a]=nil;return true end}
 local function fileOpen(path,mode)
     if mode=='r' and files[path]==nil then return nil end;if mode=='w' then files[path]='' end
-    return {read=function()return files[path]end,write=function(_,s)files[path]=files[path]..s;return true end,close=function()return true end}
+    return {read=function()return files[path]end,write=function(_,s)files[path]=files[path]..s;return true end,flush=function()return true end,close=function()end}
 end
 local event={listen=function(_,fn)listener=fn end,ignore=function()listener=nil end,
     timer=function(interval,fn,times)id=id+1;timers[id]={at=clock+interval,interval=interval,fn=fn,left=times};return id end,

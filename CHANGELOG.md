@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.4
+
+- Fix the actual cause of the installation `nil` failure: OpenOS file close returns no value on success. Check flush errors explicitly before promoting downloaded files.
+- Apply the same OpenOS write checks to node deployment, rollback and saved CENTRAL settings.
+- Replace the ineffective staging retries with the updater supplied by the install source, and discard the old cached updater before starting the installed service.
+- Correct the file mocks and verify installation with the unmodified OpenOS buffer libraries, including disk-full and cached-helper recovery cases.
+
 ## 3.1.3
 
 - Retry updater staging when OpenOS reports a network failure as the literal `nil` error.

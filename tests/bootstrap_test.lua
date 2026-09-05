@@ -8,7 +8,9 @@ local function run(steps, files, options, faults)
         if mode == 'r' and not files[path] then return end
         if mode == 'w' then files[path]='' end
         return {read=function(_,fmt) if fmt=='*l' then return files[path]:match('[^\n]+') end return files[path] end,
-          write=function(_,s) files[path]=files[path]..s; return true end, flush=function() return true end, close=function() if files._closeFail == path then files._closeFail=nil; return nil,"disk full" end; return true end}
+          write=function(_,s) files[path]=files[path]..s; return true end,
+          flush=function() if files._flushFail == path then return nil,"disk full" end; return true end,
+          close=function() if files._closeFail == path then files._closeFail=nil; return nil,"close failed" end end}
     end}
     local fs = {exists=function(p) return files[p]~=nil end, makeDirectory=function() end, remove=function(p) files[p]=nil; return true end, rename=function(a,b) if faults and faults[a] then return false,"rename failed" end files[b]=files[a];files[a]=nil;return true end}
     local serial = {serialize=function(x) if type(x)=="table" and x.id and not x.protocol then return '{id="'..x.id..'"}' end return x end,unserialize=function(x)return x end}
@@ -117,6 +119,10 @@ end
 tests.failed_staging_close_keeps_old_runtime=function()
  local f=files();f._closeFail=base..'incoming.lua'
  run({{'CLAIM'},{'DEPLOY_BEGIN','new',1,'t'},{'DEPLOY_CHUNK',1,good,'t'}, {'DEPLOY_COMMIT','new','t'},function(d,_,m)eq(d[base..'version.txt'],'old\n');eq(m.stops,0)end},f)
+end
+tests.failed_staging_flush_keeps_old_runtime=function()
+ local f=files();f._flushFail=base..'incoming.lua'
+ run({{'CLAIM'},{'DEPLOY_BEGIN','new',1,'t'},{'DEPLOY_CHUNK',1,good,'t'}, {'DEPLOY_COMMIT','new','t'},function(d,_,m)eq(d[base..'current.lua'],good);eq(d[base..'version.txt'],'old\n');eq(m.stops,0)end},f)
 end
 tests.first_tick_failure_rolls_back_before_success=function()
  local bad='return {start=function() end,tick=function()error("tick failed")end,stop=function()end}'
