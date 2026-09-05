@@ -11,16 +11,16 @@ Run these in the **OpenOS shell**, one line at a time. These are script invocati
 On CENTRAL:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua central -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
 On a field node, replace the role and ID as appropriate:
 
 ```sh
-wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/install.lua" /tmp/stratcom-install.lua
-lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/5d35a7ab7e6b84be3b58c4388018f7a14ddcee8f/release.lua"
+wget -f "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/install.lua" /tmp/stratcom-install.lua
+lua /tmp/stratcom-install.lua node strike SILO-S1 -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/release.lua"
 lua /usr/bin/stratcom.lua
 ```
 
@@ -165,6 +165,16 @@ These commands require `COMBINED_INTEL`. A communications relay satellite or ano
 Connect an OpenComputers hologram projector to **CENTRAL's component network**. The `intel` node keeps its satellite relay; CENTRAL fetches the completed scan over the modem. No satellite relay is required at CENTRAL.
 
 Use CENTRAL **3.2.0** and intelligence runtime **1.2.0**. Existing service installations following this preview branch can run `lua /usr/bin/stratcom.lua update check` in the OpenOS shell. If `source.txt` still points to an older pinned release, set it to the current manifest URL from the installation instructions first. The downloaded bundle activates when idle; CENTRAL distributes the new intelligence runtime through the mesh. In the console, check `service status` for bundle 3.2.0 and `nodes` for intel runtime 1.2.0, or use `deploy INTEL-1` to retry a held deployment. No node reinstall or mod JAR change is required for this hologram update. Fresh installations use the installer above.
+
+For an existing 3.1.4 installation, enter `quit` in CENTRAL's console, then run these lines in the OpenOS shell:
+
+```sh
+echo "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/3ec202251cbd815f508cf9b2c4a46816fe3e3cb3/release.lua" > /home/stratcom/source.txt
+lua /usr/bin/stratcom.lua update check
+lua /usr/bin/stratcom.lua
+```
+
+Use `service status` until it reports `running 3.2.0`. Check `nodes` for INTEL-1 version 1.2.0 before scanning; `deploy INTEL-1` requests deployment if needed. `update status` and `logs` report download or activation errors.
 
 In CENTRAL's STRATCOM console:
 
