@@ -201,11 +201,11 @@ These commands require `COMBINED_INTEL`. A communications relay satellite or ano
 
 ### Native HBM projection table (3.4.0)
 
-Install mod **tjHBM-NTM-v1.9** on the server and clients, update CENTRAL to **3.4.0**, and check that `INTEL-1` runs intelligence runtime **1.3.0** (`deploy INTEL-1` if needed). Version 1.9 fixes dotted outlines and keeps HBM mineral deposits in the terrain layer; run a fresh scan after updating. Place an **Intelligence Projection Table** in the command room and put an OpenComputers adapter against its block, wired to CENTRAL. Leave room above it for a projection up to six blocks across/high by default. The satellite ground station stays at INTEL-1.
+Install mod **tjHBM-NTM-v1.10** on the server and clients, update CENTRAL to **3.4.0**, and check that `INTEL-1` runs intelligence runtime **1.3.0** (`deploy INTEL-1` if needed). Version 1.10 displays a full-color miniature with Minecraft block textures; run a fresh scan after updating. Place an **Intelligence Projection Table** in the command room and put an OpenComputers adapter against its block, wired to CENTRAL. Leave room above it for a projection up to six blocks across/high by default. The satellite ground station stays at INTEL-1.
 
 The table is in HBM's missile creative tab and has an assembly-machine recipe. Its OC component is `ntm_intel_projector`. If CENTRAL has no saved projector binding, one native table is preferred automatically. If you previously bound an OC hologram, run `components ntm_intel_projector` in the OpenOS shell, then `hologram bind <full-address>` in STRATCOM.
 
-Run a **new combined scan**; older saved scans contain only sparse samples:
+Run a **new combined scan**; older snapshots lack the block types and metadata needed for textures:
 
 ```text
 scan INTEL-1 507 1709
@@ -213,7 +213,7 @@ scan INTEL-1 status
 hologram status
 ```
 
-The completed scan appears automatically. The table captures every Y level in the 64 × 64 footprint, with cyan architectural outlines and faint surfaces. Exterior mode shows the complete captured structure; terrain is hidden initially. Right-click the table for view, floor, cut-plane, rotation, size, terrain and finding controls, or use CENTRAL:
+The completed scan appears automatically. The table captures every Y level in the 64 × 64 footprint, using normal block textures and colors, opaque walls and transparent glass. Exterior mode shows the complete captured structure; terrain is hidden initially. Right-click the table for view, floor, cut-plane, rotation, size, terrain and finding controls, or use CENTRAL:
 
 ```text
 hologram view exterior
@@ -236,7 +236,7 @@ hologram select all
 
 Finding numbers match `scan INTEL-1 results`: coral arrows mark missiles, amber diamonds mark launchers/equipment, violet diamonds mark hatches, and white marks the selected finding. Co-located missile and launcher symbols remain at the same scan coordinate with separate labels. Unselected inferred regions are hidden to reduce clutter; select their finding number to locate them. Markers remain visible through the projection and across cuts so a hidden object is still locatable.
 
-This is **captured block geometry at half-block resolution**, not a textured or animated copy of the remote world. Rooms, openings, slab heights and stair shapes are retained to that resolution. Glass is rendered separately so windows remain visible in the facade. Thin shapes are approximated; custom tile/entity models such as the loaded missile are represented by findings. Natural terrain classification is a filter; turn it on when inspecting a stone/earth structure. Unloaded chunks stay empty, and status reports geometry coverage. No chunks are force-loaded. The capture adds about 13 seconds at 20 TPS. Clients build a cached surface mesh; pathological geometry is capped at 50,000 quads with an on-table notice to use a tighter cut.
+The model preserves captured **block types, textures and metadata**, including colored HBM concrete and native vanilla stair/slab shapes. Custom machine renderers use their block textures on captured bounds; animated tile/entity meshes such as the loaded missile remain finding markers. Biome-specific tint is not captured. Natural terrain classification is a filter; turn it on when inspecting a stone/earth structure. Unloaded chunks stay empty, and status reports coverage. No chunks are force-loaded. The capture adds about 13 seconds at 20 TPS. Snapshots transfer in 64 KiB pieces and are rendered from cached block geometry; a 65,536-visible-block limit displays a notice to use a tighter cut.
 
 The table retains its displayed snapshot across reloads. `hologram show INTEL-1` reloads that node's latest announced result; `hologram clear` clears it. An obsolete snapshot reference is rejected instead of silently displaying different data. The scan's source dimension must remain loaded when selecting it.
 
