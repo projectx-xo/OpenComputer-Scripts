@@ -45,6 +45,8 @@ Files: install.lua; service/stratcom.lua; service/rc.lua; service/console.lua; s
 
 ## Task 5: Integration, release and documentation
 Files: README.md; CHANGELOG.md; runtime/manifest.lua; version files; CI test workflow.
-- [ ] Run all tests and Lua 5.2 syntax checks. Review cross-file queue/token/deployment contracts with a fresh reviewer and fix findings.
-- [ ] Update version metadata and release manifest after final code. Provide a distributable bundle and verified install/migration steps.
-- [ ] Commit implementation and create a reviewable draft PR where repository access allows; do not merge an untested live-server change into main.
+- [x] Run all tests and Lua 5.2 syntax checks. Review cross-file queue/token/deployment contracts with a fresh reviewer and fix findings.
+- [x] Update version metadata and release manifest after final code. Provide a distributable bundle and verified install/migration steps.
+- [x] Commit implementation and create a reviewable draft PR where repository access allows; do not merge an untested live-server change into main.
+
+Verification: 51 scenarios passed on Lua 5.2.4 and 5.3.6; syntax and release integrity checks passed. The production offline installer, supervisor, bootstrap and combined satellite scan passed an integrated smoke test with simulated OpenOS boundaries. Published installer, manifest and all 12 pinned application files match the verified bundle. Live Minecraft smoke testing remains documented in TESTING.md. The Actions workflow is supplied under docs/ci because the publishing credential lacks workflow permission. Draft PR: https://github.com/projectx-xo/OpenComputer-Scripts/pull/1.
