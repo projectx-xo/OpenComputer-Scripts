@@ -367,6 +367,17 @@ local function getStatus(detail)
     return result
 end
 
+local function radarAddresses()
+    local addresses = {}
+    for _, kind in ipairs({"ntm_radar", "ntm_radome"}) do
+        for address in component.list(kind, true) do
+            addresses[#addresses + 1] = address
+        end
+    end
+    table.sort(addresses)
+    return addresses
+end
+
 local runtime = {}
 
 function runtime.start(ctx)
@@ -376,14 +387,10 @@ function runtime.start(ctx)
     nextTrackId = 1
     context.session = context.session or (tostring(context.id) .. ":" .. tostring(now()) .. ":" .. tostring(math.random(100000,999999)))
 
-    local addresses = {}
-    for address in component.list("ntm_radar") do
-        table.insert(addresses, address)
-    end
-    table.sort(addresses)
+    local addresses = radarAddresses()
 
     if #addresses < 1 then
-        error("No ntm_radar components detected")
+        error("No ntm_radar or ntm_radome components detected")
     end
 
     for _, address in ipairs(addresses) do
@@ -421,7 +428,7 @@ end
 function runtime.tick()
     if now() - lastHardwareCheck < 10 then return end
     local refreshed = {}
-    for address in component.list("ntm_radar") do
+    for _, address in ipairs(radarAddresses()) do
         refreshed[#refreshed + 1] = {address=address,short=address:sub(1,8),proxy=component.proxy(address)}
     end
     radars = refreshed

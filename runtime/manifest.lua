@@ -11,7 +11,7 @@ return {
             path = "runtime/strike.lua",
         },
         radar = {
-            version = "1.2.0",
+            version = "1.2.1",
             path = "runtime/radar.lua",
         },
     },

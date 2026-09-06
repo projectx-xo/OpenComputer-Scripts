@@ -375,3 +375,7 @@ python3 tools/make_release.py --ref <full-source-commit> --version 3.5.0
 ```
 
 Use a new version for every changed bundle. Commit `release.lua` separately so it can reference the immutable preceding source commit. A checksum validates transfer integrity; it is not a signature. Installers and update channels must come from the repository you trust.
+
+### Radome component discovery (3.5.1)
+
+Radar runtime 1.2.1 discovers both `ntm_radar` (standard/large radars and older radomes) and `ntm_radome` (new radomes), including hardware refresh. Update CENTRAL to 3.5.1, then run `sync` and `deploy RADAR-01` for your radar node. Reboot the radar computer after installing the renamed mod component. The radar callbacks and ABM handoff are unchanged.

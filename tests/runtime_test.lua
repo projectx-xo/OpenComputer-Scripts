@@ -160,6 +160,20 @@ test('defense inventory uses the cached missile slot', function()
     assert(reads==1,'defense status scanned '..reads..' slots')
 end)
 
+test('radomes work alone, alongside normal radars, and after hardware refresh',function()
+    local function radar(x)return {getAmount=function()return 1 end,getEntityAtIndex=function()return false,x,100,0,9,'' end}end
+    local devices={dome={kind='ntm_radome',proxy=radar(2000)}}
+    local r,ctx,sent,tick=loadRuntime('runtime/radar.lua',devices)
+    r.start(ctx);tick(1)
+    assert(r.status().radarCount==1 and r.status().activeTrackCount==1)
+    devices.normal={kind='ntm_radar',proxy=radar(0)}
+    tick(11);r.tick();tick(12)
+    assert(r.status().radarCount==2 and r.status().activeTrackCount==2)
+    devices.dome=nil;tick(22);r.tick()
+    assert(r.status().radarCount==1 and r.status().radars[1].address=='normal')
+    r.stop()
+end)
+
 test('radar observations carry session and increasing sample sequence', function()
     local x=0
     local r,ctx,sent,tick=loadRuntime('runtime/radar.lua',{radar={kind='ntm_radar',proxy={
