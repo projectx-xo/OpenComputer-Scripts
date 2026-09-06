@@ -379,3 +379,7 @@ Use a new version for every changed bundle. Commit `release.lua` separately so i
 ### Radome component discovery (3.5.1)
 
 Radar runtime 1.2.1 discovers both `ntm_radar` (standard/large radars and older radomes) and `ntm_radome` (new radomes), including hardware refresh. Update CENTRAL to 3.5.1, then run `sync` and `deploy RADAR-01` for your radar node. Reboot the radar computer after installing the renamed mod component. The radar callbacks and ABM handoff are unchanged.
+
+### Friendly launches crossing the protected center (3.5.2)
+
+CENTRAL now correlates a registered strike with the heading from the missile's first observed position toward the ordered target. A friendly launch may initially approach the protected center; this no longer disqualifies IFF. Matching still requires a new missile contact originating inside the protected region, horizontal motion, the configured heading tolerance, an active launch window and an unused salvo slot. Status-refreshed tracks receive the same IFF check before automatic engagement. Update CENTRAL only; node runtimes, service helpers and the mod JAR are unchanged.

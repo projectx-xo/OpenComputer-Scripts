@@ -1,5 +1,6 @@
 -- Run from the repository root with Lua 5.2+; hardware boundaries are simulated.
 local function extract(first, following, env)
+    if not env.tryMatchFriendlyTrack then env.tryMatchFriendlyTrack = function(track) return track.friendly end end
     if not env.hasEntityTarget then env.hasEntityTarget = function() return false end end
     local f = assert(io.open('central/central.lua')); local source = f:read('*a'); f:close()
     local a = assert(source:find('local function ' .. first .. '(', 1, true), first .. ' missing')
@@ -12,6 +13,56 @@ local function test(name, fn)
     print((ok and 'PASS ' or 'FAIL ') .. name .. (ok and '' or ': ' .. tostring(err)))
     if not ok then failures = failures + 1 end
 end
+
+local function iffFixture()
+    local f=assert(io.open('central/central.lua'));local source=f:read('*a');f:close()
+    local a=assert(source:find('local function horizontalDistance(',1,true))
+    local b=assert(source:find('local function recordLaunchSite(',a,true))
+    local env={defense={protectX=607,protectZ=1800,radius=300},friendlyExpectations={},nextFriendlyExpectationId=1,
+        IFF_MATCH_WINDOW=30,IFF_HEADING_TOLERANCE=30,now=function()return 1440 end,
+        defenseZoneConfigured=function()return true end,print=function()end}
+    return assert(load(source:sub(a,b-1)..'\nreturn {register=registerFriendlyExpectation,match=tryMatchFriendlyTrack}',
+        'iff','t',setmetatable(env,{__index=_G})))(),env
+end
+
+test('ordered salvo remains friendly while initially approaching protection center',function()
+    local iff,env=iffFixture()
+    iff.register({id='SILO-S2',role='strike'},2,1000,1000,'strike',2)
+    for i=1,2 do
+        env.now=function()return 1440+i end
+        local track={key='RADAR-01:'..i,typeId=1,firstSeen=1440+i,firstX=630.56,firstZ=1829.36,
+            x=631,z=1828,vx=3.7,vz=-8.3,threatSamples=2}
+        assert((track.x-607)*track.vx+(track.z-1800)*track.vz<0,'fixture must approach protection center')
+        assert(iff.match(track),'ordered friendly missile rejected')
+        assert(track.friendly and track.threatSamples==0)
+        assert(iff.match(track),'repeat consumed a second salvo slot')
+    end
+    assert(next(env.friendlyExpectations)==nil,'salvo count not consumed exactly once per missile')
+end)
+
+test('IFF rejects old, external, stationary, wrong-heading and excess contacts',function()
+    local iff=iffFixture();iff.register({id='S',role='strike'},1,1000,1000,'strike',0)
+    local t={key='R:1',typeId=1,firstSeen=1430,firstX=630,firstZ=1829,x=631,z=1828,vx=3.7,vz=-8.3}
+    assert(not iff.match(t));t.firstSeen=1440;t.firstX=2000;assert(not iff.match(t))
+    t.firstX=630;t.vx=0;t.vz=0;assert(not iff.match(t))
+    t.vx=-3.7;t.vz=8.3;assert(not iff.match(t))
+    t.vx=3.7;t.vz=-8.3;assert(iff.match(t))
+    t.friendly=false;assert(not iff.match(t),'unregistered extra missile claimed a friendly slot')
+end)
+
+test('defense evaluates IFF on status-refreshed tracks before threat confirmation',function()
+    local iff=iffFixture();iff.register({id='S',role='strike'},1,1000,1000,'strike',0)
+    local sent=0
+    local run=extract('evaluateTrackForDefense','defenseTick',{
+        getNode=function()return {runtimeState='running'}end,nodeOnline=function()return true end,
+        now=function()return 1441 end,RADAR_TRACK_STALE_AFTER=10,tryMatchFriendlyTrack=iff.match,
+        defense={auto=true},defenseZoneConfigured=function()return true end,automaticThreatType=function()return true end,
+        closestApproach=function()return {inbound=true}end,DEFENSE_CONFIRM_SAMPLES=3,activeEngagements={},
+        createEngagement=function()sent=sent+1 end})
+    local t={key='R:1',station='R',sequence=3,lastUpdate=1441,typeId=1,firstSeen=1440,firstX=630,firstZ=1829,
+        x=631,z=1828,vx=3.7,vz=-8.3,threatSamples=2}
+    run(t);assert(t.friendly and sent==0 and t.threatSamples==0)
+end)
 
 test('ABM range uses all three axes and rejects unavailable or stale coordinates',function()
     local check=extract('abmInRange','historyPush',{now=function()return 100 end,RADAR_TRACK_STALE_AFTER=10})

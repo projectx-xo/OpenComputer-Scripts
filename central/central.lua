@@ -27,7 +27,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.5.1"
+local VERSION = "3.5.2"
 local PROTOCOL = 2
 local CENTRAL_ID = "CENTRAL"
 local DEFAULT_TTL = 6
@@ -347,7 +347,6 @@ local function registerFriendlyExpectation(node, count, targetX, targetZ, mode, 
         deadline = created + IFF_MATCH_WINDOW + (launchDuration or 0),
         targetX = targetX,
         targetZ = targetZ,
-        targetBearing = bearingFromDelta(targetX - defense.protectX, targetZ - defense.protectZ),
         expected = count,
         remaining = count,
     }
@@ -365,24 +364,12 @@ local function trackOriginInsideProtectedRegion(track)
     return horizontalDistance(defense.protectX, defense.protectZ, track.firstX, track.firstZ) <= defense.radius
 end
 
-local function trackMovingOutward(track)
-    if not defenseZoneConfigured() or not track then return false end
-    local x = tonumber(track.x)
-    local z = tonumber(track.z)
-    local vx = tonumber(track.vx) or 0
-    local vz = tonumber(track.vz) or 0
-    if not x or not z then return false end
-    local rx = x - defense.protectX
-    local rz = z - defense.protectZ
-    return (rx * vx + rz * vz) > 0
-end
-
 local function tryMatchFriendlyTrack(track)
     if not track or track.friendly == true then return track and true or false end
     local typeId = tonumber(track.typeId)
     if typeId == nil or typeId < 0 or typeId > 9 then return false end
     if not trackOriginInsideProtectedRegion(track) then return false end
-    if not trackMovingOutward(track) then return false end
+    if (track.vx or 0)^2 + (track.vz or 0)^2 < 0.01 then return false end
 
     pruneFriendlyExpectations()
     local timestamp = now()
@@ -393,9 +380,11 @@ local function tryMatchFriendlyTrack(track)
     for _, expectation in pairs(friendlyExpectations) do
         if expectation.remaining > 0
             and timestamp >= expectation.createdAt
+            and (not track.firstSeen or track.firstSeen >= expectation.createdAt)
             and timestamp <= expectation.deadline
         then
-            local diff = angleDifference(trackHeading, expectation.targetBearing)
+            local targetBearing = bearingFromDelta(expectation.targetX - track.firstX, expectation.targetZ - track.firstZ)
+            local diff = angleDifference(trackHeading, targetBearing)
             if diff <= IFF_HEADING_TOLERANCE and (not bestAngle or diff < bestAngle) then
                 best = expectation
                 bestAngle = diff
@@ -821,6 +810,7 @@ local function applyRadarTrack(node, track)
         lastUpdate = now(),
         threatSamples = previous and previous.threatSamples or 0,
         lastEngaged = previous and previous.lastEngaged or nil,
+        firstSeen = previous and previous.firstSeen or (now() - math.max(0, tonumber(track.age) or 0)),
         firstX = previous and previous.firstX or tonumber(track.x),
         firstY = previous and previous.firstY or tonumber(track.y),
         firstZ = previous and previous.firstZ or tonumber(track.z),
@@ -1101,6 +1091,7 @@ local function evaluateTrackForDefense(track)
         track.threatSamples = 0
         return
     end
+    tryMatchFriendlyTrack(track)
     if track.sequence then
         if track.evaluatedSequence == track.sequence then return end
         track.evaluatedSequence = track.sequence
