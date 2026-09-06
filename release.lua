@@ -1,8 +1,8 @@
 return {
-    version = "3.5.1",
-    ref = "825955ab89f025b20eb5f96fb37814ab789c8011",
+    version = "3.5.2",
+    ref = "94e96699eb1670bf8cc8fce53ad0255d2b222440",
     files = {
-        ["central/central.lua"] = {size = 102873, checksum = "ab56af1f"},
+        ["central/central.lua"] = {size = 102711, checksum = "5b497761"},
         ["central/hologram.lua"] = {size = 19242, checksum = "128e2c92"},
         ["bootstrap/bootstrap.lua"] = {size = 28575, checksum = "8ea1e803"},
         ["runtime/manifest.lua"] = {size = 423, checksum = "907068f2"},
