@@ -13,5 +13,5 @@ return function(appDir)
     end
     if current then updater.write('/home/stratcom/console-backups/'..updater.checksum(current)..'.lua',current) end
     updater.write(destination,wanted)
-    return true,'Node dashboard installed. Reopen stratcom to display it.'
+    return true,'Dashboard installed. Reopen stratcom to display it.'
 end

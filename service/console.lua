@@ -6,10 +6,10 @@ local args = {...}
 local forceConsole=args[1]=='console'
 local forceDashboard=args[1]=='dashboard'
 if forceConsole or forceDashboard then table.remove(args,1) end
-local function isNode()
+local function hasDashboard()
     local chunk=loadfile('/home/stratcom/service-config.lua')
     if not chunk then return false end
-    local ok,c=pcall(chunk);return ok and type(c)=='table' and c.kind=='node'
+    local ok,c=pcall(chunk);return ok and type(c)=='table' and (c.kind=='node' or c.kind=='central')
 end
 local function dashboard()
     while true do
@@ -63,7 +63,7 @@ if #args>0 then
     execute(line);return
 end
 local ok,e=service.start();if not ok then print(e);return end
-if isNode() and not forceConsole then
+if hasDashboard() and not forceConsole then
     if dashboard()~='console' then return end
 end
 print('STRATCOM console. quit or Ctrl+C detaches; service stop stops the application.')
@@ -90,7 +90,7 @@ while true do
     if not success or not line then break end
     line=line:gsub('%s+$','')
     if line=='quit' or line=='exit' then break end
-    if line=='dashboard' and isNode() then
+    if line=='dashboard' and hasDashboard() then
         if dashboard()~='console' then break end
     elseif line~='' then execute(line) end
 end

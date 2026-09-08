@@ -45,6 +45,7 @@ print('PASS node dashboard: role details, stale contact, bounded drawing, resize
 
 local source=assert(io.open('service/console.lua')):read('*a')
 for _,kind in ipairs({'node','central'})do
+ for _,mode in ipairs({'dashboard','console'})do
  local shown,read=0,0
  local service={start=function()return true end,status=function()return{version='new'}end,alerts=function()return{},0,0 end}
  local modules={['stratcom.service']=service,event={},computer={},term={read=function()read=read+1;return'quit'end}}
@@ -54,7 +55,23 @@ for _,kind in ipairs({'node','central'})do
    if path:find('node_status_model',1,true)then return function()return model end end
    return function()return function()shown=shown+1;return'detach'end end
   end},{__index=_G})
- assert(load(source,'console','t',env))()
- assert((kind=='node' and shown==1 and read==0) or (kind=='central' and shown==0 and read==1),'incorrect default surface')
+ assert(load(source,'console','t',env))(mode)
+ assert((mode=='dashboard' and shown==1 and read==0) or (mode=='console' and shown==0 and read==1),'incorrect surface')
+ end
 end
-print('PASS console routing: nodes default to dashboard; CENTRAL retains command console')
+print('PASS console routing: nodes and CENTRAL default to dashboard')
+
+local central=model({role='central',auth='AUTHENTICATED',network='BLUE',defenseAuto=true,total=1,online=1,
+ nodes={{id='INTEL-1',role='intel',version='1.5.0',state='running',online=true}}},{state='running',version='3.13.0'},'',0)
+assert(central[1].text=='STRATCOM  /  CENTRAL')
+assert(central[6].text:find('INTEL-1  SAT',1,true))
+
+local file=assert(io.open('central/central.lua'));local source=file:read('*a');file:close()
+local start=assert(source:find('function options.dashboardSnapshot()',1,true))
+local finish=assert(source:find('local function execute(',start,true))
+local env=setmetatable({options={},nodes={A={role='radar',runtimeState='running',runtimeVersion='1.3.0'},B={role='intel',runtimeState='stopped'}},
+ nodeOnline=function(n)return n.runtimeState=='running'end,secure=true,authState={networkId='BLUE'},defense={auto=false}},{__index=_G})
+assert(load(source:sub(start,finish-1),'snapshot','t',env))()
+local data=env.options.dashboardSnapshot()
+assert(data.total==2 and data.online==1 and data.network=='BLUE' and data.defenseAuto==false)
+assert(data.nodes[1].id=='A' and data.nodes[2].online==false)

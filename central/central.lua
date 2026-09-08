@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.12.0"
+local VERSION = "3.13.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -2431,11 +2431,31 @@ local function printHelp()
     print("")
 end
 
+function options.dashboardSnapshot()
+    local data={role="central",id="CENTRAL",state="running",auth=secure and "AUTHENTICATED" or "INSECURE LEGACY",
+        network=secure and authState.networkId or nil,defenseAuto=defense.auto,nodes={},total=0,online=0}
+    local ids={}
+    for id in pairs(nodes) do ids[#ids+1]=id end
+    table.sort(ids)
+    for _,id in ipairs(ids) do
+        local node=nodes[id]
+        local online=nodeOnline(node)
+        data.total=data.total+1
+        if online then data.online=data.online+1 end
+        if #data.nodes<64 then
+            data.nodes[#data.nodes+1]={id=tostring(id):sub(1,64),role=node.role,state=node.runtimeState,
+                version=node.runtimeVersion,online=online}
+        end
+    end
+    return data
+end
+
 local function execute(line)
     local args = splitWords(line)
     local command = string.lower(args[1] or "")
 
     if command == "" then return
+    elseif command == "snapshot" then print(serialization.serialize(options.dashboardSnapshot()))
     elseif command == "help" then printHelp()
     elseif command == "cancel" then pendingConfirmation = nil; print("Cancelled.")
     elseif command == "confirm" then
@@ -2809,6 +2829,14 @@ loadLaunchSites()
 printHeader()
 syncRepository()
 discover()
+if options.appDir then
+    local chunk=loadfile(options.appDir..'/ui/install_console.lua')
+    if chunk then
+        local ok,installed,message=pcall(function()return chunk()(options.appDir)end)
+        if not ok then print('Console migration deferred: '..tostring(installed))
+        elseif message then print(message) end
+    end
+end
 if options.ready then options.ready() end
 print("Type 'help' for commands.")
 print("")

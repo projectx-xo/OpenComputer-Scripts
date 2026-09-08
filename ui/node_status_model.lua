@@ -8,6 +8,18 @@ return function(snapshot, service, logText, age)
     local function row(text,tone)rows[#rows+1]={text=clean(text),tone=tone or 'normal'}end
     local function yes(v)return v==nil and '--' or (v and 'YES' or 'NO')end
     snapshot=snapshot or {};service=service or {};local h=type(snapshot.health)=='table' and snapshot.health or {}
+    if snapshot.role=='central' then
+        row('STRATCOM  /  CENTRAL','title')
+        row('Service: '..clean(service.state)..'   Bundle: '..clean(service.version),service.state=='running' and 'good' or 'warn')
+        row('Network: '..clean(snapshot.network)..'   '..clean(snapshot.auth),snapshot.auth=='AUTHENTICATED' and 'good' or 'warn')
+        row('Defense AUTO: '..yes(snapshot.defenseAuto),snapshot.defenseAuto and 'good' or 'warn')
+        row('FLEET  '..clean(snapshot.online)..'/'..clean(snapshot.total)..' ONLINE','section')
+        for _,node in ipairs(snapshot.nodes or {}) do
+            row(clean(node.id)..'  '..clean(node.role=='intel' and 'SAT' or node.role):upper()..'  '..clean(node.version)
+                ..'  '..clean(node.state)..'  '..(node.online and 'ONLINE' or 'OFFLINE'),node.online and 'good' or 'warn')
+        end
+        if (snapshot.total or 0)>#(snapshot.nodes or {}) then row('Additional nodes omitted; use console nodes.','warn') end
+    else
     row('STRATCOM  /  FIELD NODE','title')
     row(clean(snapshot.id or 'WAITING FOR NODE')..'  ['..clean(snapshot.role=='intel' and 'sat' or snapshot.role or 'unassigned'):upper()..']','title')
     row('Service: '..clean(service.state)..'   Runtime: '..clean(snapshot.state),service.state=='running' and 'good' or 'warn')
@@ -45,6 +57,7 @@ return function(snapshot, service, logText, age)
         row('Energy: '..clean(h.energy)..'   Fuel: '..clean(h.fuel)..'   Oxidizer: '..clean(h.oxidizer))
     else row('Waiting for hardware / runtime enrollment.','warn') end
     if h.error then row(h.error,'bad') end
+    end
     row('UPDATE','section')
     row(clean(service.update):gsub('; stable helpers require reinstall when changed',''))
     if service.busy then row('Busy: updates wait for idle.','warn') end
