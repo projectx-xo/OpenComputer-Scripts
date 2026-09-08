@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.6.1"
+local VERSION = "3.6.2"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -695,7 +695,7 @@ local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeS
                 return nil
             end
         end
-        if not assignment then
+        if not assignment and ({strike=true, defense=true, radar=true, intel=true})[role] then
             enrollments[identity] = {id=id, role=tostring(role)}
             if not savePreferences() then enrollments[identity] = nil; return nil end
         end
@@ -1310,6 +1310,9 @@ local function handleMgmtEnvelope(envelope)
         end
         enrollmentStates[identity] = nil
         local assignment = enrollments[identity]
+        local pending = assignment and assignment.role == "unassigned"
+            and assignment.id == "PENDING-" .. identity:sub(1, 8):upper() and assignment or nil
+        if pending then assignment = nil end
         if assignment and assignment.role ~= role then
             print("[ENROLL] COLLISION: " .. identity .. " changed from " .. tostring(assignment.role) .. " to " .. role)
             return
@@ -1319,7 +1322,8 @@ local function handleMgmtEnvelope(envelope)
             if not id then print("[ENROLL] No available ID for " .. role); return end
             assignment = {id=id, role=role}
             enrollments[identity] = assignment
-            if not savePreferences() then enrollments[identity] = nil; return end
+            if not savePreferences() then enrollments[identity] = pending; return end
+            if pending then nodes[pending.id] = nil end
             print("[ENROLL] Assigned " .. id .. " to " .. identity)
         end
         originate(MGMT_PORT, source, "MGMT", {"ASSIGN", identity, assignment.id, assignment.role})

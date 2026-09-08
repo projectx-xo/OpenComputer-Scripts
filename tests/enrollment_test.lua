@@ -44,6 +44,33 @@ test('allocator follows conventions and skips IDs and aliases',function()
     assert(allocate('intel')=='INTEL-1')
 end)
 
+test('pending heartbeat cannot reserve an unassigned identity',function()
+    local records={}
+    local register=extract(central,'registerNode','deploymentChunk','registerNode',{
+        enrollments=records,nodes={},radarTracks={},now=function()return 1 end,
+        savePreferences=function()error('pending identity must not be persisted')end,
+        sendMgmt=function()end,print=function()end})
+    assert(register('PENDING-94D387BD','unassigned','3.1.1','none','missing','running','s','94d387bd-full'))
+    assert(next(records)==nil)
+end)
+
+test('persisted pending identity migrates but established roles remain protected',function()
+    for _,saveOK in ipairs({true,false})do
+        local old={id='PENDING-94D387BD',role='unassigned'}
+        local records={['94d387bd-full']=old};local nodes={[old.id]={}};local sent=0
+        local receive=extract(central,'handleMgmtEnvelope','handleRadarTrackEvent','handleMgmtEnvelope',{
+            enrollments=records,nodes=nodes,enrollmentStates={},MGMT_PORT=4510,
+            allocateNodeId=function()return 'INTEL-1'end,savePreferences=function()return saveOK end,
+            originate=function()sent=sent+1 end,print=function()end})
+        receive({source=old.id,kind='BOOT_ENROLL',payload={'94d387bd-full','intel','INTEL'}})
+        if saveOK then
+            assert(records['94d387bd-full'].id=='INTEL-1' and nodes[old.id]==nil and sent==1)
+            receive({source=old.id,kind='BOOT_ENROLL',payload={'94d387bd-full','strike','STRIKE'}})
+            assert(records['94d387bd-full'].role=='intel' and sent==1)
+        else assert(records['94d387bd-full']==old and nodes[old.id] and sent==0)end
+    end
+end)
+
 test('dual transport reuses one envelope and duplicate delivery executes once',function()
     local sent={}
     local transmit=extract(central,'transmitWire','originate','transmitEnvelope',{
