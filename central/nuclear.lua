@@ -34,8 +34,9 @@ return function(ctx)
                 if not seen[e.id] then
                     seen[e.id]=true;order[#order+1]=e.id
                     if #order>256 then seen[table.remove(order,1)]=nil end
-                    ctx.log('[NUCLEAR] '..e.payload..' '..e.kind..' observed X='..e.x
-                        ..(e.y and ' Y='..e.y or '')..' Z='..e.z..' dimension='..e.dimension..' tick='..e.tick)
+                    ctx.log('[NUCLEAR] '..e.payload..' '..e.kind..' observed X='..string.format('%.0f',math.floor(e.x+.5))
+                        ..(e.y and ' Y='..string.format('%.0f',math.floor(e.y+.5)) or '')
+                        ..' Z='..string.format('%.0f',math.floor(e.z+.5)))
                     if e.kind=='EXPLOSION' then
                         if #pending<16 then pending[#pending+1]={event=e,ready=ctx.now()+60,expires=ctx.now()+600}
                         else ctx.log('[NUCLEAR] Post-blast scan queue full; observation retained in logs.') end

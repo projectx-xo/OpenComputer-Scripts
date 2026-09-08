@@ -35,3 +35,7 @@ print('PASS nuclear events: validation, deduplication, ACK, delayed intel handof
 f=fixture();f:report();f.clock=60;f.api.tick()
 f.api.receive(f.node,{'ERROR','scan failed','old'});assert(f.api.busy())
 f.api.receive(f.node,{'ERROR','scan failed','request'});assert(not f.api.busy(),'failed scan retained lock')
+
+f=fixture();f.batch.events[1].x=-3197.402;f.batch.events[1].z=2000.382;f.batch.events[1].y=59.8;f:report()
+assert(f.logs[1]=='[NUCLEAR] NUCLEAR EXPLOSION observed X=-3197 Y=60 Z=2000')
+assert(f.batch.events[1].x==-3197.402 and f.batch.events[1].dimension==0 and f.batch.events[1].tick==100)
