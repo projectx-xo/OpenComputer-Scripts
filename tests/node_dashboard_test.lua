@@ -4,7 +4,7 @@ local snapshot={id='SILO-S1',role='strike',bootstrap='3.5.0',runtime='3.3.0',sta
  launchers={{index=1,missileLabel='Bunker Buster',ready=true,armed=false},{index=2,missileLabel='Stealth Missile',ready=true,armed=false}}}}
 local rows=model(snapshot,{state='running',version='3.11.0',update='up to date'},'event one\nevent two',0)
 local text='';for _,r in ipairs(rows)do text=text..r.text..'\n' end
-assert(text:find('RECENT CONTACT',1,true) and text:find('Stealth Missile',1,true) and text:find('Team: Blue',1,true))
+assert(text:find('RECENT CONTACT',1,true) and text:find('Stealth Missile',1,true) and not text:find('Team:',1,true))
 rows=model(snapshot,{state='running'},'',20);assert(rows[6].text:find('NO RECENT CONTACT',1,true),'stale central contact stayed online')
 local function run(exitChar,width,height,resize,reload)
  local clock,submitted,stopped,pulls=0,0,0,0

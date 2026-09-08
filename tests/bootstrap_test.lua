@@ -167,9 +167,9 @@ tests.automatic_enrollment_classifies_nuclear_satellite=function()
  for _,e in ipairs(sent)do if e.kind=='ENROLL_ACK' and e.source=='NUC-1' then assigned=true end end
  assert(assigned,'nuclear satellite was not automatically assigned')
 end
-tests.team_asset_reply_is_separate_from_status=function()
+tests.status_does_not_query_or_send_basecenter_identity=function()
  local f=files();f._components={modem={'modem'},ntm_radar={'radar'}}
- f._proxies={radar={getTeamIdentity=function()return 'Blue','RADAR-01',12,64,30,0,'BASECENTER','Tester'end}}
+ f._proxies={radar={getTeamIdentity=function()error('BaseCenter callback must not be queried')end}}
  f[base..'current.lua']='return {start=function()end,status=function()return {ready=true}end}'
  local _,sent=run({{'CLAIM'},{'STATUS','full','request',port=4511,kind='CMD'}},f)
  local status,identity
@@ -177,8 +177,7 @@ tests.team_asset_reply_is_separate_from_status=function()
   if e.kind=='RUNTIME' and e.payload[1]=='STATUS' then status=e.payload[2] end
   if e.kind=='RUNTIME' and e.payload[1]=='TEAM_ASSETS' then identity=e.payload[2] end
  end
- assert(status and not status.teamAssets and identity and identity.session)
- assert(identity.teamAssets[1].team=='Blue' and identity.teamAssets[1].x==12)
+ assert(status and not status.teamAssets and not identity)
 end
 tests.remote_bundle_update_is_claimed_correlated_and_idempotent=function()
  local f=files();local checks=0

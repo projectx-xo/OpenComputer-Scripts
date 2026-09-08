@@ -1,8 +1,8 @@
-# STRATCOM 3.13.0
+# STRATCOM 3.14.0
 
 **Update the fleet from CENTRAL with `upgrade`; inspect progress with `upgrade status`.** For the first transition from an older release, run `update check` on CENTRAL. [Update guide](docs/easy-updates.md).
 
-For BaseCenter asset identification and advisory friendly-target warnings, see [team awareness](docs/team-awareness.md).
+BaseCenter team integration was removed in 3.14.0. STRATCOM authentication keys, SATCOM and launch IFF remain independent and supported.
 
 For nuclear monitoring and post-blast intelligence scans, see [STRATCOM 3.8.0](docs/release-3.8.0.md).
 

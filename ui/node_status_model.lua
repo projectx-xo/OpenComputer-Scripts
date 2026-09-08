@@ -29,11 +29,6 @@ return function(snapshot, service, logText, age)
     if centralAge then centralAge=centralAge+(age or 0) end
     row('CENTRAL: '..(snapshot.controller and (centralAge and centralAge<=15 and 'RECENT CONTACT' or 'NO RECENT CONTACT') or 'UNCLAIMED'),
         snapshot.controller and centralAge and centralAge<=15 and 'good' or 'warn')
-    local teams,seen={},{}
-    for _,a in ipairs(type(snapshot.assets)=='table' and snapshot.assets or {}) do
-        if a.source=='BASECENTER' and type(a.team)=='string' and a.team~='' and not seen[a.team] then seen[a.team]=true;teams[#teams+1]=clean(a.team) end
-    end
-    row('Team: '..(#teams>0 and table.concat(teams,' / ') or 'UNKNOWN - register equipment'))
     row('EQUIPMENT','section')
     if snapshot.error then row(snapshot.error,'bad') end
     if h.multiLauncher then

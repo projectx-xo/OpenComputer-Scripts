@@ -77,3 +77,5 @@ For node dashboards (3.11.0/bootstrap 3.5.0), include `ui/*.lua` in syntax check
 For SAT nodes (3.12.0/intel runtime 1.5.0), connect a Combined Intelligence and a Communications station to one node. Verify scans and authenticated communications concurrently, then remove the modem and repeat over SATCOM alone. Verify automatic selection, ambiguous duplicate intelligence stations, explicit `satelliteAddress`, existing INTEL IDs, and SAT IDs on new enrollment.
 
 For 3.13.0, CENTRAL should now default to the dashboard too. Verify fleet entries, authentication, defense-auto state, C/Q controls, `dashboard`, explicit `stratcom console`, and launcher migration after upgrading. Snapshot polling must not trigger operational commands.
+
+For 3.14.0, verify node lists, status and dashboards contain no BaseCenter labels; `team` and `assets` are removed. Authentication and SATCOM should still work. Bootstrap must not poll `getTeamIdentity` or send TEAM_ASSETS. Earlier BaseCenter test instructions describe the removed feature.

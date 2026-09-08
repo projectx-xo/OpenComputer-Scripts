@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.13.0"
+local VERSION = "3.14.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -167,7 +167,7 @@ local function now()
 end
 
 local function savePreferences()
-    local raw = serialization.serialize({nodes = nodePreferences, enrollments = enrollments, defense = defense, abmNode = ABM_NODE_ID, hologramAddress = hologramAddress, teamName = options.teamName})
+    local raw = serialization.serialize({nodes = nodePreferences, enrollments = enrollments, defense = defense, abmNode = ABM_NODE_ID, hologramAddress = hologramAddress})
     local path = PREFERENCES_PATH .. ".tmp"
     local f, err = io.open(path, "w")
     if not f then print("[CONFIG] Save failed: " .. tostring(err)); return false end
@@ -191,7 +191,6 @@ local function loadPreferences()
     if not raw then return end
     local ok, saved = pcall(serialization.unserialize, raw)
     if not ok or type(saved) ~= "table" then return end
-    if type(saved.teamName)=="string" and #saved.teamName<=64 and not saved.teamName:find("%c") then options.teamName=saved.teamName end
     if type(saved.nodes) == "table" then nodePreferences = saved.nodes end
     if type(saved.enrollments) == "table" then enrollments = saved.enrollments end
     if type(saved.abmNode) == "string" then ABM_NODE_ID = saved.abmNode end
@@ -1528,14 +1527,7 @@ local function handleRuntimeEnvelope(envelope)
     if siteIntel then siteIntel.receive(node, payload) end
     if nuclear then nuclear.receive(node, payload) end
 
-    if responseType == "TEAM_ASSETS" then
-        if options.teamAssets and node.claimed and type(payload[2])=="string" and #payload[2]<=4096 then
-            local ok,identity=pcall(serialization.unserialize,payload[2])
-            if ok and type(identity)=="table" and identity.session==node.session and node.session then
-                options.teamAssets.ingest(node,identity)
-            end
-        end
-    elseif responseType == "INTERCEPT_STATUS" then
+    if responseType == "INTERCEPT_STATUS" then
         handleInterceptorOutcome(node,payload)
     elseif responseType == "STATUS" then
         local ok, status = pcall(serialization.unserialize, payload[2])
@@ -1554,9 +1546,6 @@ local function handleRuntimeEnvelope(envelope)
         node.nextStatus = now() + STATUS_INTERVAL
     elseif responseType == "SCAN_COMPLETE" then
         local frame = payload[2]
-        if options.teamAssets and type(frame)=="table" and frame.session==node.session and type(frame.targetX)=="number" and type(frame.targetZ)=="number" then
-            options.teamAssets.report(frame.targetX,frame.targetZ,type(frame.native)=="table" and frame.native.dimension or nil)
-        end
         if hologram and node.role == "intel" and type(frame) == "table" and frame.session == node.session then
             hologram.offer(node.id, frame)
         end
@@ -1837,7 +1826,6 @@ local function printNodes()
             nodeAssetSummary(node),
             nodeOnline(node) and "ONLINE" or "OFFLINE"
         ))
-        if options.teamAssets then print("  " .. options.teamAssets.describe(node)) end
     end
     if not found then print("No mesh bootstrap nodes discovered.") end
     print("")
@@ -1956,7 +1944,6 @@ local function printTracks(filterNode)
 end
 
 local function printStatus(node)
-    if options.teamAssets then print(options.teamAssets.describe(node)) end
     if not node then print("Node not found."); return end
     if tostring(node.role) == "radar" or node.radarStation then
         printRadarNode(node)
@@ -2129,7 +2116,6 @@ local function printLaunchSite(id)
     print("Position:     X=" .. tostring(math.floor((site.x or 0) + 0.5))
         .. " Y=" .. tostring(math.floor((site.y or 0) + 0.5))
         .. " Z=" .. tostring(math.floor((site.z or 0) + 0.5)))
-    if options.teamAssets then options.teamAssets.report(site.x,site.z,site.dimension) end
     print("Launches:     " .. tostring(site.launches or 0))
     print("Confidence:   " .. tostring(site.confidence or launchSiteConfidence(site.launches)))
     print("Intelligence: " .. tostring(site.intelState or "Radar estimate; awaiting an available intelligence node"))
@@ -2330,7 +2316,6 @@ local function executeStrike(node, class, count, x, z, interval)
     print("")
     local expected = {}
     for _, launcher in ipairs(selected) do expected[launcher.index] = {item=launcher.missileName,hash=launcher.loadoutHash} end
-    if options.teamAssets then options.teamAssets.warn(node,x,z) end
     confirmAction("STRIKE", function()
         if not awaitStatus(node) then return end
         if not node.status or node.status.strikeScheduling~=true then print("REJECTED: strike runtime changed; deploy the updated runtime.");return end
@@ -2389,7 +2374,6 @@ local function printHelp()
     print("  radar <node>")
     print("  tracks [node]")
     print("  upgrade | upgrade status        Update CENTRAL and node bundles")
-    print("  team [BaseCenter team name] | assets")
     print("  launchsites")
     print("  launchsite <id>")
     print("")
@@ -2548,15 +2532,6 @@ local function execute(line)
         if args[2]=='status' then print(options.fleetUpdate.status())
         elseif args[2] then print("Usage: upgrade | upgrade status")
         else local ok,reason=options.fleetUpdate.start();print(reason) end
-    elseif command == "team" then
-        local name=table.concat(args," ",2)
-        if name=="" then print("Team: "..tostring(options.teamName or "UNKNOWN"));return end
-        if #name>64 or name:find("%c") then print("Invalid team name.");return end
-        local old=options.teamName;options.teamName=name
-        if savePreferences() then print("Team perspective: "..name..". Asset ownership comes from BaseCenter.")
-        else options.teamName=old end
-    elseif command == "assets" then
-        for _,node in pairs(nodes) do print(node.id);if options.teamAssets then print(options.teamAssets.describe(node)) end end
     elseif command == "nodes" then printNodes()
     elseif command == "radars" then printRadars()
     elseif command == "radar" then
@@ -2690,7 +2665,6 @@ local function execute(line)
             print("Launcher: L" .. launcher .. "  " .. tostring(launcherStatus.missileLabel))
             print("Target: X=" .. x .. " Z=" .. z)
             local expected, expectedHash = launcherStatus.missileName, launcherStatus.loadoutHash
-            if options.teamAssets then options.teamAssets.warn(node,x,z) end
             confirmAction("LAUNCH", function()
                 if not awaitStatus(node) then return end
                 local current = node.launchers and node.launchers[launcher]
@@ -2707,7 +2681,6 @@ local function execute(line)
             print("Missile: " .. clip(node.missileLabel, 30))
             print("Target: X=" .. x .. " Z=" .. z)
             local expected = node.missileName
-            if options.teamAssets then options.teamAssets.warn(node,x,z) end
             confirmAction("LAUNCH", function()
                 if not awaitStatus(node) then return end
                 if not node.armed or not node.ready or node.missileName ~= expected then
@@ -2785,12 +2758,6 @@ if options.appDir then
     else print("[NUCLEAR] Monitoring unavailable: " .. tostring(err)) end
 end
 
-if options.appDir then
-    local chunk,err=loadfile(options.appDir .. "/central/team_assets.lua")
-    if chunk then options.teamAssets=chunk()({now=now,nodes=function()return nodes end,
-        online=nodeOnline,team=function()return options.teamName end,log=print})
-    else print("[TEAM] Asset identification unavailable: "..tostring(err)) end
-end
 if options.appDir then
     local ok,updater=pcall(require,'stratcom.update')
     local serviceOK,service=pcall(require,'stratcom.service')
