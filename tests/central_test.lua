@@ -481,4 +481,20 @@ test('nearby launch origins remain separate and satellite coordinates do not mov
     assert(record({firstX=3099.46,firstY=92,firstZ=4094.46,dimension=1})~=sites[1])
 end)
 
+test('ABM waits for a correlated post-launch ready status',function()
+    local node={id='ABM',runtimeState='running',lastStatus=10,ready=true,missileName='abm',abmReloadRequired=true,pendingStatus='new'}
+    local env={getNode=function()return node end,nodeOnline=function()return true end,now=function()return 10 end,
+        ABM_NODE_ID='ABM',ABM_MISSILE_ID='abm',RADAR_TRACK_STALE_AFTER=15,STATUS_INTERVAL=5,
+        serialization={unserialize=function(v)return v end},applyRuntimeStatus=function(n,s)n.ready=s.ready end}
+    local ready=extract('abmReady','hasEntityTarget',env)
+    local receive=extract('handleRuntimeEnvelope','collectOperatorReply',env)
+    assert(not ready())
+    receive({source='ABM',payload={'STATUS',{ready=true},'old'}});assert(not ready())
+    receive({source='ABM',payload={'STATUS',{ready=true}}});assert(not ready())
+    receive({source='ABM',payload={'STATUS',{ready=false},'new'}})
+    assert(not ready(),'pad reload delay ignored')
+    node.pendingStatus='loaded'
+    receive({source='ABM',payload={'STATUS',{ready=true},'loaded'}});assert(ready())
+end)
+
 if failures > 0 then error(tostring(failures) .. ' central regression tests failed') end

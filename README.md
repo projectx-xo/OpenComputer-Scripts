@@ -1,4 +1,4 @@
-# STRATCOM 3.17.0
+# STRATCOM 3.18.0
 
 **Update the fleet from CENTRAL with `upgrade`; inspect progress with `upgrade status`.** For the first transition from an older release, run `update check` on CENTRAL. [Update guide](docs/easy-updates.md).
 

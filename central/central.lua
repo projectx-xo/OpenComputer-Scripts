@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.17.0"
+local VERSION = "3.18.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -1047,6 +1047,7 @@ local function abmReady()
     if not nodeOnline(node) then return false, "ABM_OFFLINE" end
     if node.runtimeState ~= "running" then return false, "ABM_RUNTIME_NOT_RUNNING" end
     if not node.lastStatus or now() - node.lastStatus > RADAR_TRACK_STALE_AFTER then return false, "ABM_STATUS_STALE" end
+    if node.abmReloadRequired then return false, "ABM_WAITING_FOR_RELOAD_STATUS" end
     if node.ready ~= true then return false, "ABM_NOT_READY" end
     if tostring(node.missileName or "") ~= ABM_MISSILE_ID then
         return false, "WRONG_ABM_PAYLOAD"
@@ -1135,6 +1136,10 @@ local function launchPendingEngagement()
         return
     end
 
+    node.abmReloadRequired = true
+    node.ready = false
+    node.pendingStatus = nil
+    node.nextStatus = 0
     engagement.state = "LAUNCHING"
     engagement.launchSentAt = now()
     print("[DEFENSE] " .. ABM_NODE_ID .. " engaging " .. engagement.trackKey
@@ -1532,7 +1537,11 @@ local function handleRuntimeEnvelope(envelope)
     elseif responseType == "STATUS" then
         local ok, status = pcall(serialization.unserialize, payload[2])
         if ok and type(status) == "table" then
+            if node.abmReloadRequired and not payload[3] then return end
             if payload[3] and payload[3] ~= node.pendingStatus then return end
+            if node.abmReloadRequired and payload[3] and payload[3]==node.pendingStatus then
+                node.abmReloadRequired = nil
+            end
             applyRuntimeStatus(node, status)
             node.statusComplete = payload[3] or node.pendingStatus
             node.pendingStatus = nil
@@ -1596,6 +1605,12 @@ local function handleRuntimeEnvelope(envelope)
             finishEngagement(pendingArm, "ABORTED", code)
         end
     elseif responseType == "LAUNCH_RESULT" then
+        if node.id == ABM_NODE_ID then
+            node.abmReloadRequired = true
+            node.ready = false
+            node.pendingStatus = nil
+            node.nextStatus = 0
+        end
         if node.id == ABM_NODE_ID and pendingArm then
             local success = payload[2] == true
             local engagement = pendingArm
