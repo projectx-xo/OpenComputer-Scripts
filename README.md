@@ -240,7 +240,7 @@ map SILO-S1 BRAVO <pad-address> <inventory-controller-address> 2 3
 payloads SILO-S1
 ```
 
-The last arguments are the inventory side (`0`–`5`) and optional slot. Use the full component addresses listed by `hardware`. With one pad and one controller, the strike runtime can save the unambiguous pair automatically. With several devices, it leaves inventories unmapped until assigned. A missing device never causes another device to take over its saved launcher number.
+The last arguments are the inventory side (`0`–`5`) and optional slot. Use the full component addresses listed by `hardware`. With one pad and one controller, the strike runtime can save the unambiguous pair automatically. With mod 1.13 and strike runtime 3.3.0, missing mappings for several devices are discovered from physical adapter adjacency and saved automatically. Identical missile contents do not affect matching. Ambiguous connections, unsupported controller hosts, and older mod callbacks remain unmapped until assigned. Discovery is limited to 64 pad/controller probes per refresh; larger groups require manual mappings. Existing saved mappings are preserved. A missing device never causes another device to take over its saved launcher number.
 
 Mappings are saved in `/home/stratcom/config.lua`. A local strike-node console accepts `hardware` and `map BRAVO <pad-address> <inventory-controller-address> 2 3`. Disarm before changing mappings. Missile slots are cached; empty/changed slots trigger a rescan, and launch actions recheck readiness.
 

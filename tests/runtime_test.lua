@@ -278,4 +278,31 @@ test('verification frames correlate scan requests and page exact target types',f
     r.onMessage('CENTRAL','SCAN',100,200,'request-2');state='COMPLETE';advance(4);r.tick()
     assert(sent[#sent][3].request=='request-2' and sent[#sent][3].id~=frame.id,'repeated target reused old frame')
 end)
+test('physical mapping pairs four identical inventories independently of address order',function()
+    local devices={};local expected={4,2,1,3}
+    for i=1,4 do
+        local index=i;local p=pad()
+        p.getInventoryMapping=function(address)if address=='i'..expected[index] then return 1 end end
+        devices['p'..i]={kind='ntm_launch_pad',proxy=p}
+        devices['i'..i]={kind='inventory_controller',proxy={
+            getInventorySize=function(side)return side==1 and 1 or nil end,
+            getStackInSlot=function()return {name='hbm:item.missile_stealth',size=1,label='Stealth'}end}}
+    end
+    local r,ctx=loadRuntime('runtime/strike.lua',devices);r.start(ctx)
+    for i,m in ipairs(ctx.config.launchers)do assert(m.inventoryAddress=='i'..expected[i] and m.side==1)end
+    assert(r.status().readyCount==4)
+    -- Saved assignments are authoritative even when later probes disagree.
+    devices.p1.proxy.getInventoryMapping=function()error('must preserve mapping')end
+    r.stop();r.start(ctx)
+    assert(ctx.config.launchers[1].inventoryAddress=='i4')
+end)
+
+test('physical mapping does not assign a shared controller side twice',function()
+    local p=pad();p.getInventoryMapping=function()return 1 end
+    local devices={a={kind='ntm_launch_pad',proxy=p},b={kind='ntm_launch_pad',proxy=p},
+        i={kind='inventory_controller',proxy={getInventorySize=function()return 1 end}}}
+    local r,ctx=loadRuntime('runtime/strike.lua',devices);r.start(ctx)
+    assert(not ctx.config.launchers[1].inventoryAddress and not ctx.config.launchers[2].inventoryAddress)
+end)
+
 if failures>0 then error(failures..' runtime tests failed') end

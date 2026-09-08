@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.6.5"
+local VERSION = "3.7.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"

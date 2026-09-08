@@ -73,6 +73,43 @@ local function refreshHardware()
             changed = true
         end
     end
+    -- Match physical adjacency supplied by the pad; never infer identity from missile contents.
+    local candidates, uses, reserved = {}, {}, {}
+    for _, mapping in ipairs(saved) do
+        if mapping.inventoryAddress then
+            reserved[mapping.inventoryAddress .. ":" .. tostring(mapping.side or "*")] = true
+        end
+    end
+    local queries, complete = 0, true
+    for index, mapping in ipairs(saved) do
+        if not mapping.inventoryAddress and not mapping.logistics and availablePads[mapping.padAddress] then
+            local matches = {}
+            for _, address in ipairs(inventories) do
+                queries = queries + 1
+                if queries > 64 then complete = false; break end
+                local ok, side = pcall(component.invoke, mapping.padAddress, "getInventoryMapping", address)
+                if ok and type(side)=="number" and side>=0 and side<=5 and side%1==0 then
+                    local key=address .. ":" .. side
+                    local readable, size=pcall(component.invoke,address,"getInventorySize",side)
+                    if readable and type(size)=="number" and size>0 and not reserved[key] and not reserved[address .. ":*"] then
+                        matches[#matches+1]={address=address,side=side,key=key}
+                        uses[key]=(uses[key] or 0)+1
+                    end
+                end
+            end
+            if #matches==1 then candidates[index]=matches[1] end
+        end
+        if not complete then break end
+    end
+    if complete then
+        for index, match in pairs(candidates) do
+            if uses[match.key]==1 then
+                saved[index].inventoryAddress=match.address
+                saved[index].side=match.side
+                changed=true
+            end
+        end
+    end
     context.config.launchers = saved
     if changed and context.saveConfig then
         local ok, err = context.saveConfig(context.config)
