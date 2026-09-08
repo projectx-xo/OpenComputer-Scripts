@@ -1,4 +1,4 @@
-# STRATCOM 3.10.0
+# STRATCOM 3.11.0
 
 **Update the fleet from CENTRAL with `upgrade`; inspect progress with `upgrade status`.** For the first transition from an older release, run `update check` on CENTRAL. [Update guide](docs/easy-updates.md).
 
@@ -11,6 +11,12 @@ Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manag
 For the current full upgrade procedure and automatic enrollment, see [STRATCOM 3.6.0](docs/release-3.6.0.md).
 
 Version 3 runs as an OpenOS boot service. The console attaches to that service; closing it leaves the network and runtime operating. Installed software starts from disk before update checks. Application updates restart the application, without rebooting the computer.
+
+## Field-node status page
+
+Opening `stratcom` on a field node shows a coloured ASCII status page: identity, team, CENTRAL contact, equipment readiness, updates and recent events. CENTRAL retains its command console. Press **C** for the console, **Q** to detach, or **Up/Down** to scroll. Enter `dashboard` in a node console to return, or use `stratcom console` from OpenOS to open command input directly. One-shot commands remain supported. Detaching either view leaves the service running.
+
+Update from CENTRAL with `upgrade`. Once nodes finish updating, quit any already-open node console and reopen `stratcom` (or `lua /usr/bin/stratcom.lua`). The update migrates known shipped console launchers automatically and backs them up in `/home/stratcom/console-backups/`; custom launchers are retained. Future dashboard changes travel in the normal application bundle. The page opens when you launch `stratcom`, not automatically at OpenOS boot. See [3.11.0 release notes](docs/release-3.11.0.md).
 
 ## Install this preview
 

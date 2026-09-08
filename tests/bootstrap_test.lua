@@ -193,6 +193,17 @@ tests.remote_bundle_update_is_claimed_correlated_and_idempotent=function()
  end end
  eq(replies,3)
 end
+tests.dashboard_snapshot_is_structured_and_read_only=function()
+ local f=files();local replied
+ f._modules={serialization={serialize=function(v)return v end,unserialize=function(v)return v end}}
+ f[base..'current.lua']='return {start=function()end,status=function(detail)assert(detail=="summary");return{ready=true,missileLabel="Test missile"}end}'
+ local done=false
+ run({},f,{ready=function()end,stopping=function()return done end,
+  nextCommand=function()done=true;return{id=1,line='snapshot'}end,
+  reply=function(_,ok,text)assert(ok);replied=text end})
+ assert(replied and replied.id=='N1' and replied.role=='RADAR' and replied.health.ready)
+ assert(replied.health.missileLabel=='Test missile' and replied.intent=='running')
+end
 local failed=0
 for name,test in pairs(tests)do local ok,err=pcall(test);print((ok and 'PASS ' or 'FAIL ')..name..(ok and '' or ': '..err));if not ok then failed=failed+1 end end
 assert(failed==0,tostring(failed)..' failures')

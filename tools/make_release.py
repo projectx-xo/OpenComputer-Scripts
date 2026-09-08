@@ -9,6 +9,7 @@ import zlib
 FILES = [
     'central/central.lua', 'central/hologram.lua', 'central/site_intel.lua', 'central/nuclear.lua', 'central/team_assets.lua', 'central/fleet_update.lua', 'bootstrap/bootstrap.lua', 'runtime/manifest.lua',
     'runtime/strike.lua', 'runtime/launchpad.lua', 'runtime/radar.lua', 'runtime/intel.lua', 'runtime/nuclear.lua',
+    'ui/node_status.lua', 'ui/node_status_model.lua', 'ui/install_console.lua',
     'service/stratcom.lua', 'service/update.lua', 'service/auth.lua', 'service/rc.lua', 'service/console.lua', 'install.lua',
 ]
 parser = argparse.ArgumentParser()

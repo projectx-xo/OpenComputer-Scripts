@@ -3,6 +3,26 @@ local event = require('event')
 local computer = require('computer')
 local term = require('term')
 local args = {...}
+local forceConsole=args[1]=='console'
+local forceDashboard=args[1]=='dashboard'
+if forceConsole or forceDashboard then table.remove(args,1) end
+local function isNode()
+    local chunk=loadfile('/home/stratcom/service-config.lua')
+    if not chunk then return false end
+    local ok,c=pcall(chunk);return ok and type(c)=='table' and c.kind=='node'
+end
+local function dashboard()
+    while true do
+        local version=service.status().version
+        if type(version)~='string' or not version:match('^[%w][%w%.%_%-]*$') then return 'console' end
+        local dir='/home/stratcom/releases/'..version..'/ui/'
+        local view=loadfile(dir..'node_status.lua');local model=loadfile(dir..'node_status_model.lua')
+        if not view or not model then return 'console' end
+        local ok,result=pcall(function()return view()(service,model())end)
+        if not ok then print('Dashboard unavailable: '..tostring(result));return 'console' end
+        if result~='reload' then return result end
+    end
+end
 local alertCursor=0
 local function readAlerts()
     if not service.alerts then return '' end
@@ -43,6 +63,9 @@ if #args>0 then
     execute(line);return
 end
 local ok,e=service.start();if not ok then print(e);return end
+if isNode() and not forceConsole then
+    if dashboard()~='console' then return end
+end
 print('STRATCOM console. quit or Ctrl+C detaches; service stop stops the application.')
 local history={}
 -- OpenOS term.read accepts cursor methods on its history table. Handle the wake-up
@@ -67,5 +90,7 @@ while true do
     if not success or not line then break end
     line=line:gsub('%s+$','')
     if line=='quit' or line=='exit' then break end
-    if line~='' then execute(line) end
+    if line=='dashboard' and isNode() then
+        if dashboard()~='console' then break end
+    elseif line~='' then execute(line) end
 end

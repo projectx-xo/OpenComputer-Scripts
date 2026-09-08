@@ -9,7 +9,7 @@ local keyboard = require("keyboard")
 local auth = options.auth
 if not auth then local ok, loaded = pcall(require, "stratcom.auth"); if ok then auth = loaded end end
 
-local VERSION = "3.4.0"
+local VERSION = "3.5.0"
 local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
 local AUTH_PATH = "/home/stratcom/auth.key"
@@ -769,6 +769,7 @@ local function handleEnvelope(port, envelope)
         if port == MGMT_PORT and envelope.kind == "MGMT" then handler = managementCommand
         elseif port == OP_PORT and envelope.kind == "CMD" then handler = runtimeCommand end
         if handler then
+            if string.upper(envelope.source)==CENTRAL_ID then options.lastCentralAt=now() end
             local previousReplyTo = replyTo
             replyTo = envelope.id
             local ok, err = pcall(handler, string.upper(envelope.source), envelope.payload)
@@ -862,13 +863,32 @@ if not autoEnroll and desiredState == "running" and filesystem.exists(CURRENT_RU
     if not ok then error("Runtime startup failed: " .. tostring(err)) end
 end
 abortDeployment()
+if options.appDir then
+    local chunk=loadfile(options.appDir..'/ui/install_console.lua')
+    if chunk then
+        local ok,installed,message=pcall(function()return chunk()(options.appDir)end)
+        if not ok then log('Console migration deferred: '..tostring(installed))
+        elseif message then log(message) end
+    end
+end
 if options.ready then options.ready() end
 
 local function localCommand(line)
     local words = {}
     for word in tostring(line):gmatch("%S+") do words[#words+1] = word end
     local cmd = string.lower(words[1] or "status")
-    if cmd == "start" or cmd == "stop" or cmd == "maintenance" then
+    if cmd == "snapshot" then
+        local data={id=NODE_ID,role=NODE_ROLE,bootstrap=VERSION,runtime=installedRuntimeVersion(),
+            state=runtimeState(),intent=desiredState,controller=controllerId,
+            centralAge=options.lastCentralAt and now()-options.lastCentralAt or nil,assets=teamAssets()}
+        if runtimeModule and type(runtimeModule.status)=="function" then
+            local ok,value=pcall(runtimeModule.status,"summary")
+            if ok and type(value)=="table" then data.health=value else data.error=tostring(value) end
+        end
+        local encoded=serialization.serialize(data)
+        if #encoded>32768 then data.health=nil;data.error="Status exceeds dashboard limit; use console status.";encoded=serialization.serialize(data) end
+        return true,encoded
+    elseif cmd == "start" or cmd == "stop" or cmd == "maintenance" then
         local state = cmd == "start" and "running" or cmd == "stop" and "stopped" or "maintenance"
         local ok, err = setDesired(state)
         if ok then
