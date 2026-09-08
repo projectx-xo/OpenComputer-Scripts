@@ -7,12 +7,20 @@ local scanFrame, frameSequence, nextPoll = nil, 0, 0
 local scanRequest
 
 local function satellite()
-    local addresses = {}
-    for address in component.list("ntm_satlink") do addresses[#addresses + 1] = address end
     local address = context.config and context.config.satelliteAddress
     if not address then
-        if #addresses ~= 1 then error("Connect one ntm_satlink, or set config.satelliteAddress") end
-        address = addresses[1]
+        local iterator, seen = component.list("ntm_satlink"), {}
+        for _ = 1, 64 do
+            local candidate = iterator()
+            if not candidate or seen[candidate] then break end
+            seen[candidate] = true
+            local ok, satelliteType = pcall(function() return component.proxy(candidate).getType() end)
+            if ok and satelliteType == "COMBINED_INTEL" then
+                if address then error("Multiple COMBINED_INTEL links; set config.satelliteAddress") end
+                address = candidate
+            end
+        end
+        if not address then error("Connect a COMBINED_INTEL satellite ground station") end
     end
     local sat = component.proxy(address)
     if not sat.isConnected() then error("Satellite link disconnected; check power and frequency") end

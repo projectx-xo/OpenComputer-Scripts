@@ -41,7 +41,7 @@ test('allocator follows conventions and skips IDs and aliases',function()
     assert(allocate('strike')=='SILO-S3')
     assert(allocate('defense')=='ABM-A2')
     assert(allocate('radar')=='RADAR-02')
-    assert(allocate('intel')=='INTEL-1')
+    assert(allocate('intel')=='SAT-1')
 end)
 
 test('pending heartbeat cannot reserve an unassigned identity',function()

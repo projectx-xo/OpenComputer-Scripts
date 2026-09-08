@@ -243,6 +243,21 @@ test('intelligence commands reject other satellite types without starting', func
     assert(starts==0);assert(sent[#sent][2]=='ERROR');assert(sent[#sent][4]=='token')
 end)
 
+test('satellite node selects intelligence beside communications and preserves explicit selection',function()
+    local intel={isConnected=function()return true end,getType=function()return 'COMBINED_INTEL' end,
+        intelStatus=function()return 'IDLE',0,0,0 end}
+    local devices={intel={kind='ntm_satlink',proxy=intel},comm={kind='ntm_satlink',proxy={
+        getType=function()return 'SATCOM_RELAY' end,isConnected=function()return true end}}}
+    local r,ctx=loadRuntime('runtime/intel.lua',devices);r.start(ctx)
+    assert(r.status().ready and r.status().satelliteAddress=='intel')
+    devices.other={kind='ntm_satlink',proxy=intel}
+    assert(not r.status().ready,'ambiguous intelligence links must require selection')
+    ctx.config.satelliteAddress='intel'
+    assert(r.status().ready,'explicit selection should resolve ambiguity')
+    ctx.config.satelliteAddress='comm'
+    assert(not r.status().ready,'explicit wrong type must not silently switch')
+end)
+
 test('combined satellite scan and finding fields use real HBM callback positions', function()
     local target
     local r,ctx,sent=loadRuntime('runtime/intel.lua',{sat={kind='ntm_satlink',proxy={

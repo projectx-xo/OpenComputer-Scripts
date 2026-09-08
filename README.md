@@ -1,4 +1,4 @@
-# STRATCOM 3.11.0
+# STRATCOM 3.12.0
 
 **Update the fleet from CENTRAL with `upgrade`; inspect progress with `upgrade status`.** For the first transition from an older release, run `update check` on CENTRAL. [Update guide](docs/easy-updates.md).
 
@@ -43,7 +43,7 @@ For a new field node, connect its hardware and either a modem or a Satellite Gro
 lua /tmp/stratcom-install.lua node -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
 ```
 
-One ordinary launch pad containing an Anti Ballistic Missile becomes `ABM-A#`; a pad containing another missile or a multi-pad/custom-pad group becomes `SILO-S#`; radar hardware becomes `RADAR-##`; and a ground station tuned to a combined intelligence satellite becomes `INTEL-#`. Empty single launch pads and machines with conflicting hardware wait for correction instead of being assigned. Existing explicit `node <role> <id>` installs remain supported.
+One ordinary launch pad containing an Anti Ballistic Missile becomes `ABM-A#`; a pad containing another missile or a multi-pad/custom-pad group becomes `SILO-S#`; radar hardware becomes `RADAR-##`; and a ground station tuned to a combined intelligence satellite becomes `SAT-#`. Empty single launch pads and machines with conflicting hardware wait for correction instead of being assigned. Existing explicit `node <role> <id>` installs remain supported.
 
 Run these in the **OpenOS shell**, one line at a time. These are script invocations, not lines for the interactive `lua>` prompt.
 
@@ -74,7 +74,7 @@ Every machine needs OpenOS with its thread library and at least one transport: a
 
 After installation, STRATCOM can use a modem, the Communications Satellite, or both. Satellite transport requires an `ntm_satlink` ground station at CENTRAL and at each remote node, all tuned to the same Communications Satellite frequency. When both transports deliver the same packet, its envelope ID ensures it is processed once. The satellite carries communications only; it does not transport ME items or propellant.
 
-An INTEL node needs its Combined Intelligence Satellite ground station for scanning. If it communicates with CENTRAL over SATCOM, give it a second ground station tuned to the Communications Satellite; otherwise use a modem for transport.
+A SAT node (the existing `intel` runtime role) automatically selects its Combined Intelligence Satellite ground station for scanning by satellite type. CENTRAL and node dashboards display this role as SAT. New automatic enrollments receive `SAT-#` IDs; existing `INTEL-#` IDs remain valid. If it communicates with CENTRAL over SATCOM, give it a second ground station tuned to the Communications Satellite; otherwise use a modem for transport.
 
 Secured networks authenticate every complete serialized packet with HMAC-SHA-256 before parsing it. Boot epochs and sequence windows reject captured traffic from old sessions and duplicate modem/SATCOM delivery. Network traffic remains visible to receivers and can still be jammed; the security boundary prevents other teams from forging accepted commands or telemetry.
 
@@ -280,7 +280,7 @@ scan INTEL-1 structure 1
 
 Wait for `COMPLETE` before reading results. Findings show classifications, coordinates, confidence, target type, target ID and target count, including the missile/silo fields supplied by your HBM fork. Structural pages show **HBM blast resistance** and use eight cells per console page. Finding pages contain six findings.
 
-These commands require `COMBINED_INTEL`. A communications relay satellite or another intelligence satellite type is rejected. The relay must be connected and tuned to the right frequency. If several `ntm_satlink` components are attached, set `satelliteAddress` in the node configuration to select one.
+These commands require `COMBINED_INTEL`. A communications relay satellite or another intelligence satellite type is rejected. The relay must be connected and tuned to the right frequency. A Communications Satellite ground station can be attached alongside the Combined Intelligence station without manual selection. If more than one Combined Intelligence station is attached, set `satelliteAddress` in the node configuration to select one. An explicit selection is always respected.
 
 ## Command-room hologram
 

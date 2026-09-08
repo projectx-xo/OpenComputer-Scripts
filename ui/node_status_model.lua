@@ -9,7 +9,7 @@ return function(snapshot, service, logText, age)
     local function yes(v)return v==nil and '--' or (v and 'YES' or 'NO')end
     snapshot=snapshot or {};service=service or {};local h=type(snapshot.health)=='table' and snapshot.health or {}
     row('STRATCOM  /  FIELD NODE','title')
-    row(clean(snapshot.id or 'WAITING FOR NODE')..'  ['..clean(snapshot.role or 'unassigned'):upper()..']','title')
+    row(clean(snapshot.id or 'WAITING FOR NODE')..'  ['..clean(snapshot.role=='intel' and 'sat' or snapshot.role or 'unassigned'):upper()..']','title')
     row('Service: '..clean(service.state)..'   Runtime: '..clean(snapshot.state),service.state=='running' and 'good' or 'warn')
     row('Intent: '..clean(snapshot.intent)..'   Bundle: '..clean(service.version))
     row('Bootstrap: '..clean(snapshot.bootstrap)..'   Role version: '..clean(snapshot.runtime))

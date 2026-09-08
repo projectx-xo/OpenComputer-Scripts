@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.11.0"
+local VERSION = "3.12.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -681,7 +681,7 @@ local function allocateNodeId(role)
         if role == "strike" then candidate = "SILO-S" .. index
         elseif role == "defense" then candidate = "ABM-A" .. index
         elseif role == "radar" then candidate = string.format("RADAR-%02d", index)
-        elseif role == "intel" then candidate = "INTEL-" .. index
+        elseif role == "intel" then candidate = "SAT-" .. index
         elseif role == "nuclear" then candidate = "NUC-" .. index
         else return nil end
         if not reservedNodeId(candidate) then return candidate end
@@ -1831,7 +1831,7 @@ local function printNodes()
         print(string.format(
             "%-10s %-10s %-9s %-9s %-21s %s",
             id,
-            string.upper(tostring(node.role)),
+            string.upper(tostring(node.role == "intel" and "sat" or node.role)),
             clip(node.runtimeVersion, 9),
             clip(node.runtimeState, 9),
             nodeAssetSummary(node),
@@ -1968,7 +1968,7 @@ local function printStatus(node)
     print("NODE STATUS")
     print("----------------------------------------")
     print("Node:        " .. node.id)
-    print("Role:        " .. string.upper(tostring(node.role)))
+    print("Role:        " .. string.upper(tostring(node.role == "intel" and "sat" or node.role)))
     print("Link:        " .. (nodeOnline(node) and "ONLINE" or "OFFLINE"))
     print("Claimed:     " .. tostring(node.claimed))
     print("Bootstrap:   " .. tostring(node.bootstrapVersion or "---"))
