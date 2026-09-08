@@ -36,6 +36,7 @@ local function run(steps, files, options, faults)
         if type(s)=='number' then clock=clock+s;return end
         return 'modem_message',nil,nil,s.port or 4510,nil,'STRATCOM_NET',{protocol=2,id=tostring(cursor),source='CENTRAL',destination=s.destination or 'N1',kind=s.kind or 'MGMT',ttl=1,payload=s}
     end}
+    if files._modules then for k,v in pairs(files._modules) do modules[k]=v end end
     env.require=function(n)return assert(modules[n],n)end
     assert(load(source,'bootstrap','t',env))(options)
     return files,sent,metrics
@@ -178,6 +179,19 @@ tests.team_asset_reply_is_separate_from_status=function()
  end
  assert(status and not status.teamAssets and identity and identity.session)
  assert(identity.teamAssets[1].team=='Blue' and identity.teamAssets[1].x==12)
+end
+tests.remote_bundle_update_is_claimed_correlated_and_idempotent=function()
+ local f=files();local checks=0
+ f._modules={['stratcom.service']={command=function(command)eq(command,'update check');checks=checks+1;return true end,
+  status=function()return{update='checking'}end},['stratcom.update']={current=function()return'old'end,pending=function()return nil end}}
+ local _,sent=run({{'UPDATE_CHECK','unauthorized','new'},{'CLAIM'},
+  {'UPDATE_CHECK','request','new'},{'UPDATE_CHECK','request','new'},{'UPDATE_STATUS','request'}},f)
+ eq(checks,1)
+ local replies=0
+ for _,e in ipairs(sent)do if e.kind=='MGMT_UPDATE_STATUS' then
+  replies=replies+1;eq(e.payload[1],'request');eq(e.payload[2].version,'old');eq(e.payload[2].pending,false)
+ end end
+ eq(replies,3)
 end
 local failed=0
 for name,test in pairs(tests)do local ok,err=pcall(test);print((ok and 'PASS ' or 'FAIL ')..name..(ok and '' or ': '..err));if not ok then failed=failed+1 end end

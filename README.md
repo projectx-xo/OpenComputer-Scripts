@@ -1,4 +1,6 @@
-# STRATCOM 3.9.0
+# STRATCOM 3.10.0
+
+**Update the fleet from CENTRAL with `upgrade`; inspect progress with `upgrade status`.** For the first transition from an older release, run `update check` on CENTRAL. [Update guide](docs/easy-updates.md).
 
 For BaseCenter asset identification and advisory friendly-target warnings, see [team awareness](docs/team-awareness.md).
 

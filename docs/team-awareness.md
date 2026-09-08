@@ -1,5 +1,7 @@
 # BaseCenter team awareness
 
+**Update correction (3.10.0):** bootstrap code updates with the application bundle. Reinstalling it is unnecessary. Use [the fleet update procedure](easy-updates.md); local reinstall applies only to actual stable service-helper changes.
+
 STRATCOM 3.9.0, bootstrap 3.3.0 and tjHBM-NTM 1.15 add team identification for registered HBM launch pads (including custom pads), radars and Satellite Ground Stations. BaseCenter 1.0 supplies teams, team chat, colours and its player friendly-fire rules. Its required UniMixins dependency must also be installed. No BaseCenter objective is required: keep `preventNoTeamJoins=false` and `kickTeamMembersOnBaseCenterDeath=false` in the `teams` category of `config/hbmbasecenter.cfg`. This setup retains BaseCenter's default combat-logging behavior; do not use its base-spawn commands if you do not want base-driven respawns.
 
 ## Set up

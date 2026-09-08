@@ -9,7 +9,7 @@ local keyboard = require("keyboard")
 local auth = options.auth
 if not auth then local ok, loaded = pcall(require, "stratcom.auth"); if ok then auth = loaded end end
 
-local VERSION = "3.3.0"
+local VERSION = "3.4.0"
 local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
 local AUTH_PATH = "/home/stratcom/auth.key"
@@ -619,6 +619,26 @@ local function commitDeployment(version, transaction)
     finish(true, "OK")
 end
 
+local lastUpdateRequest
+local function updateCommand(command,token,target)
+    if type(token)~='string' or #token==0 or #token>100 then return end
+    if command=='UPDATE_CHECK' and (type(target)~='string' or #target>80 or not target:match('^[%w][%w%.%_%-]*$')) then return end
+    local ok,report=pcall(function()
+        local service=require('stratcom.service')
+        local updater=require('stratcom.update')
+        local accepted,reason=true,nil
+        if command=='UPDATE_CHECK' and lastUpdateRequest~=token and updater.current()~=target then
+            accepted,reason=service.command('update check')
+            if accepted or reason=='update already in progress' then lastUpdateRequest=token;accepted=true end
+        end
+        local status=service.status()
+        return {ok=not not accepted,error=reason,version=tostring(updater.current() or 'none'),
+            pending=updater.pending()~=nil,update=tostring(status.update or ''),session=runtimeSession}
+    end)
+    if not ok then report={ok=false,error=tostring(report):sub(1,160),version='unknown',pending=false,update='service unavailable',session=runtimeSession} end
+    sendMgmt('MGMT_UPDATE_STATUS',token,serialization.serialize(report))
+end
+
 local function managementCommand(source, payload)
     local command = payload[1]
     local arg1 = payload[2]
@@ -670,7 +690,9 @@ local function managementCommand(source, payload)
 
     if source ~= controllerId or source ~= CENTRAL_ID then return end
 
-    if command == "INFO" then
+    if command == "UPDATE_CHECK" or command == "UPDATE_STATUS" then
+        updateCommand(command,arg1,arg2)
+    elseif command == "INFO" then
         sendInfo()
     elseif command == "DEPLOY_BEGIN" then
         beginDeployment(arg1, arg2, payload[4], payload[5])

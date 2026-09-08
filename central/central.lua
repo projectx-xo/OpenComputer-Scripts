@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.9.0"
+local VERSION = "3.10.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -1362,7 +1362,9 @@ local function handleMgmtEnvelope(envelope)
     if not node then return end
     node.lastSeen = now()
 
-    if envelope.kind == "MGMT_ACK" then
+    if envelope.kind == "MGMT_UPDATE_STATUS" then
+        if options.fleetUpdate then options.fleetUpdate.receive(node,payload) end
+    elseif envelope.kind == "MGMT_ACK" then
         local command = tostring(payload[1])
         local success = payload[2]
         local detail = payload[3]
@@ -2386,6 +2388,7 @@ local function printHelp()
     print("  radars")
     print("  radar <node>")
     print("  tracks [node]")
+    print("  upgrade | upgrade status        Update CENTRAL and node bundles")
     print("  team [BaseCenter team name] | assets")
     print("  launchsites")
     print("  launchsite <id>")
@@ -2520,6 +2523,11 @@ local function execute(line)
         nodePreferences[node.id].desiredState = value == "on" and "maintenance" or "running"
         if savePreferences() then awaitControl(node, MGMT_PORT, value == "on" and "MAINTENANCE" or "START") end
     elseif command == "discover" then discover()
+    elseif command == "upgrade" then
+        if not options.fleetUpdate then print("Fleet update requires the installed service.");return end
+        if args[2]=='status' then print(options.fleetUpdate.status())
+        elseif args[2] then print("Usage: upgrade | upgrade status")
+        else local ok,reason=options.fleetUpdate.start();print(reason) end
     elseif command == "team" then
         local name=table.concat(args," ",2)
         if name=="" then print("Team: "..tostring(options.teamName or "UNKNOWN"));return end
@@ -2763,6 +2771,27 @@ if options.appDir then
         online=nodeOnline,team=function()return options.teamName end,log=print})
     else print("[TEAM] Asset identification unavailable: "..tostring(err)) end
 end
+if options.appDir then
+    local ok,updater=pcall(require,'stratcom.update')
+    local serviceOK,service=pcall(require,'stratcom.service')
+    local chunk=loadfile(options.appDir..'/central/fleet_update.lua')
+    if ok and serviceOK and chunk then
+        options.fleetUpdate=chunk()({now=now,token=nextMessageId,nodes=function()return nodes end,
+            online=nodeOnline,current=updater.current,pending=updater.pending,serviceStatus=service.status,
+            check=function()return service.command('update check')end,sync=syncRepository,log=print,decode=serialization.unserialize,
+            load=function()local raw=updater.read('/home/stratcom/fleet-update.db');return raw and serialization.unserialize(raw)end,
+            save=function(job)return pcall(updater.write,'/home/stratcom/fleet-update.db',serialization.serialize(job))end,
+            send=sendMgmt,reconcile=function(node)reconcileNode(node,true)end,
+            runtimeCurrent=function(node)
+                local desired=desiredRuntimes[node.role]
+                local intent=desiredState(node)
+                if intent~='running' then return node.runtimeState==intent or (intent=='stopped' and node.runtimeState=='missing') end
+                return desired and node.runtimeVersion==desired.version and node.runtimeState=='running'
+            end})
+        options.fleetUpdate.timer=event.timer(2,options.fleetUpdate.tick,math.huge)
+    end
+end
+
 loadPreferences()
 if secure then print("[AUTH] Authenticated network required: " .. authState.networkId)
 else print("[AUTH] WARNING: INSECURE LEGACY NETWORK") end
@@ -2823,6 +2852,7 @@ if hologramTimer then event.cancel(hologramTimer) end
 event.cancel(defenseTimer)
 if siteIntel and siteIntel.timer then event.cancel(siteIntel.timer) end
 if nuclear and nuclear.timer then event.cancel(nuclear.timer) end
+if options.fleetUpdate and options.fleetUpdate.timer then event.cancel(options.fleetUpdate.timer) end
 event.cancel(statusTimer)
 event.cancel(deploymentTimer)
 event.ignore("modem_message", onModemMessage)

@@ -1,5 +1,7 @@
 # STRATCOM 3.8.0 — Nuclear Detection Satellites
 
+**Update correction (3.10.0):** bootstrap code updates with the application bundle. Reinstalling it is unnecessary. Use [the fleet update procedure](easy-updates.md); local reinstall applies only to actual stable service-helper changes.
+
 Requires tjHBM-NTM 1.14 on the server and clients. The new Nuclear Detection Satellite reports loaded nuclear/thermonuclear missile sightings and nuclear detonations, with exact available coordinates, dimension and world tick. These are observations, not predicted targets or automatic strike authorization. Explosion reports currently provide X/Z; altitude is omitted when the source does not supply it.
 
 Launch a Nuclear Detection Satellite and tune a Satellite Ground Station to its frequency. Connect that station to its own OpenComputers node, plus a modem or a separate communications-satellite station for the STRATCOM network. Install the node in automatic mode (no role or name arguments). Bootstrap 3.2.0 recognizes the hardware and CENTRAL assigns NUC-1, NUC-2, etc., then deploys nuclear runtime 1.0.0. The asset column reads Nuclear Detection. Keep the existing Combined Intelligence Satellite on its INTEL node; mixing both sensing types on one computer is ambiguous.
