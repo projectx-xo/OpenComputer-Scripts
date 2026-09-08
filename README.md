@@ -1,4 +1,6 @@
-# STRATCOM 3.8.0
+# STRATCOM 3.9.0
+
+For BaseCenter asset identification and advisory friendly-target warnings, see [team awareness](docs/team-awareness.md).
 
 For nuclear monitoring and post-blast intelligence scans, see [STRATCOM 3.8.0](docs/release-3.8.0.md).
 

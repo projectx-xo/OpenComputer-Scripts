@@ -9,7 +9,7 @@ local keyboard = require("keyboard")
 local auth = options.auth
 if not auth then local ok, loaded = pcall(require, "stratcom.auth"); if ok then auth = loaded end end
 
-local VERSION = "3.2.0"
+local VERSION = "3.3.0"
 local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
 local AUTH_PATH = "/home/stratcom/auth.key"
@@ -316,6 +316,24 @@ end
 
 local function sendMgmt(messageType, ...)
     return originate(MGMT_PORT, CENTRAL_ID, messageType, {...})
+end
+
+local function teamAssets()
+    local assets, count = {}, 0
+    local function number(v)return type(v)=="number" and v==v and math.abs(v)<=30000000 end
+    for _,kind in ipairs({'ntm_launch_pad','ntm_custom_launch_pad','ntm_radar','ntm_satlink'}) do
+        for address in component.list(kind) do
+            count=count+1
+            if count>16 then return assets end
+            local ok,team,label,x,y,z,dimension,source=pcall(component.invoke,address,'getTeamIdentity')
+            if ok and source=='BASECENTER' and type(team)=='string' and #team>0 and #team<=64 and not team:find('%c')
+                and type(label)=='string' and #label<=32 and not label:find('%c')
+                and number(x) and number(y) and number(z) and number(dimension) and dimension%1==0 then
+                assets[#assets+1]={team=team,label=label,x=x,y=y,z=z,dimension=dimension,source=source}
+            end
+        end
+    end
+    return assets
 end
 
 local function saveConfig(updated)
@@ -688,6 +706,12 @@ local function runtimeCommand(source, payload)
     if payload[1] == "STATUS" and type(runtimeModule.status) == "function" then
         local ok, status = pcall(runtimeModule.status, payload[2])
         originate(OP_PORT, source, "RUNTIME", {ok and "STATUS" or "ERROR", ok and serialization.serialize(status) or tostring(status), payload[3]})
+        local identity={session=runtimeSession,teamAssets=teamAssets()}
+        local encoded=serialization.serialize(identity)
+        while #encoded>4096 and #identity.teamAssets>0 do
+            table.remove(identity.teamAssets);encoded=serialization.serialize(identity)
+        end
+        originate(OP_PORT,source,"RUNTIME",{"TEAM_ASSETS",encoded})
         return
     end
     if type(runtimeModule.onMessage) ~= "function" then return end

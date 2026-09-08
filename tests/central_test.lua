@@ -421,12 +421,27 @@ test('maintenance intent is retried until the node enters maintenance', function
     assert(sent=='MAINTENANCE','lost maintenance command was never retried')
 end)
 
+test('friendly-target warning preserves normal strike confirmation and launch',function()
+    local warned,confirmation,launched=false,nil,false
+    local launcher={index=1,missileName='nuke',missileLabel='Nuke',loadoutHash='hash',ready=true}
+    local node={id='SILO',multiLauncher=true,status={strikeScheduling=true},launchers={launcher}}
+    local run=extract('executeStrike','executeCounterstrike',{
+        VALID_CLASSES={nuclear=true},selectPayloadLaunchers=function()return {launcher}end,
+        options={teamAssets={warn=function()warned=true end}},print=function()end,
+        confirmAction=function(token,fn)assert(warned);confirmation=fn;assert(token=='STRIKE')end,
+        awaitStatus=function()return true end,serialization={serialize=function(v)return v end},OP_PORT=4511,
+        awaitControl=function(_,_,command)assert(command=='STRIKE');launched=true end})
+    run(node,'nuclear',1,100,100,1)
+    assert(warned and confirmation and not launched)
+    confirmation();assert(launched,'friendly warning blocked approved launch')
+end)
+
 test('intelligence asset label is complete and link columns align',function()
     local summary=extract('nodeAssetSummary','printNodes',{clip=function(v)return v or '---'end})
     assert(summary({role='intel'})=='Combined Intelligence')
     local lines={}
     local render=extract('printNodes','printLauncherTable',{
-        nodes={I={role='intel'},R={role='radar'}},nodeAssetSummary=summary,
+        options={},nodes={I={role='intel'},R={role='radar'}},nodeAssetSummary=summary,
         nodeOnline=function()return true end,clip=function(v)return v or '---'end,
         print=function(v)lines[#lines+1]=v end})
     render()

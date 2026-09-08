@@ -166,6 +166,19 @@ tests.automatic_enrollment_classifies_nuclear_satellite=function()
  for _,e in ipairs(sent)do if e.kind=='ENROLL_ACK' and e.source=='NUC-1' then assigned=true end end
  assert(assigned,'nuclear satellite was not automatically assigned')
 end
+tests.team_asset_reply_is_separate_from_status=function()
+ local f=files();f._components={modem={'modem'},ntm_radar={'radar'}}
+ f._proxies={radar={getTeamIdentity=function()return 'Blue','RADAR-01',12,64,30,0,'BASECENTER','Tester'end}}
+ f[base..'current.lua']='return {start=function()end,status=function()return {ready=true}end}'
+ local _,sent=run({{'CLAIM'},{'STATUS','full','request',port=4511,kind='CMD'}},f)
+ local status,identity
+ for _,e in ipairs(sent)do
+  if e.kind=='RUNTIME' and e.payload[1]=='STATUS' then status=e.payload[2] end
+  if e.kind=='RUNTIME' and e.payload[1]=='TEAM_ASSETS' then identity=e.payload[2] end
+ end
+ assert(status and not status.teamAssets and identity and identity.session)
+ assert(identity.teamAssets[1].team=='Blue' and identity.teamAssets[1].x==12)
+end
 local failed=0
 for name,test in pairs(tests)do local ok,err=pcall(test);print((ok and 'PASS ' or 'FAIL ')..name..(ok and '' or ': '..err));if not ok then failed=failed+1 end end
 assert(failed==0,tostring(failed)..' failures')
