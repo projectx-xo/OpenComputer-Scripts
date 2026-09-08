@@ -11,10 +11,15 @@ local bootstrap=read('bootstrap/bootstrap.lua')
 local function classifier(devices,types,payload)
     local component={}
     component.list=function(kind)local list=devices[kind] or {};local i=0;return function()i=i+1;return list[i]end end
-    component.invoke=function(_,method)assert(method=='getPayloadIdentity');return payload end
-    local satlinks={}
-    for address,satelliteType in pairs(types or {})do satlinks[#satlinks+1]={address=address,proxy={getType=function()return satelliteType end}}end
-    return extract(bootstrap,'componentAddresses','now','classifyHardware',{component=component,satlinks=satlinks})
+    component.invoke=function(address,method)
+        if method=='getType' then return types[address] end
+        assert(method=='getPayloadIdentity');return payload
+    end
+    devices.ntm_satlink={}
+    for address in pairs(types or {})do devices.ntm_satlink[#devices.ntm_satlink+1]=address end
+    -- No accepted communications proxies: detection must inspect hardware directly.
+    return extract(bootstrap,'componentAddresses','now','classifyHardware',{component=component,satlinks={}})
+
 end
 
 test('hardware classification is conservative and communications links are transport only',function()

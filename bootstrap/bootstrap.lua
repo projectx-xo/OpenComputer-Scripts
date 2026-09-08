@@ -9,7 +9,7 @@ local keyboard = require("keyboard")
 local auth = options.auth
 if not auth then local ok, loaded = pcall(require, "stratcom.auth"); if ok then auth = loaded end end
 
-local VERSION = "3.1.0"
+local VERSION = "3.1.1"
 local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
 local AUTH_PATH = "/home/stratcom/auth.key"
@@ -113,8 +113,8 @@ local function classifyHardware()
     local ordinary = componentAddresses("ntm_launch_pad")
     local custom = componentAddresses("ntm_custom_launch_pad")
     local intel = 0
-    for _, station in ipairs(satlinks) do
-        local ok, satelliteType = pcall(station.proxy.getType)
+    for _, address in ipairs(componentAddresses("ntm_satlink")) do
+        local ok, satelliteType = pcall(component.invoke, address, "getType")
         if ok and satelliteType == "COMBINED_INTEL" then intel = intel + 1 end
     end
 
