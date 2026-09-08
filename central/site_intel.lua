@@ -81,7 +81,7 @@ return function(ctx)
                 or (kind=='MISSILE' and (target=='LOADED_MISSILE' or target=='STORED_MISSILE') and 2 or nil)
             local distance=(v[1]-job.x)^2+(v[3]-job.z)^2
             if rank and v[1]==v[4] and v[2]==v[5] and v[3]==v[6] and v[9]>=80 and v[9]<=100
-                and distance<=100^2 and (not job.best or rank<job.best.rank or (rank==job.best.rank and distance<job.best.distance)) then
+                and distance<=(job.site.verificationRadius or 100)^2 and (not job.best or rank<job.best.rank or (rank==job.best.rank and distance<job.best.distance)) then
                 job.best={x=v[1],y=v[2],z=v[3],kind=kind,rank=rank,distance=distance}
             end
         end

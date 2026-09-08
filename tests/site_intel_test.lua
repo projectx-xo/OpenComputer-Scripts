@@ -49,3 +49,7 @@ assert(f.site.intelState=='SCAN_REJECTED' and not f.api.busy())
 f=fixture();f.site.dimension=0;token=f:start();f:complete(token)
 assert(f.site.intelState=='DIMENSION_UNCONFIRMED' and not f.site.verified)
 print('PASS launch-site verification: correlation, paginated selection, exact coordinates, exclusions, busy nodes, timeout, restart and errors')
+
+f=fixture();f.site.verificationRadius=4;token=f:start();f:complete(token)
+f:rows('108,40,200,108,40,200,1,LAUNCH_INFRASTRUCTURE,100,1,LAUNCHPAD',true)
+assert(not f.site.verified,'neighboring launch pad incorrectly verified this origin')

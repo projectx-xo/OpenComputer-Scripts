@@ -452,4 +452,18 @@ test('correlated hit survives radar loss and ends as intercepted',function()
     assert(state=='INTERCEPTED')
 end)
 
+test('nearby launch origins remain separate and satellite coordinates do not move association',function()
+    local sites={};local record=extract('recordLaunchSite','evaluateLaunchSiteCandidate',{
+        launchSites=sites,nextLaunchSiteId=1,LAUNCH_SITE_MERGE_DISTANCE=4,now=function()return 1 end,
+        horizontalDistance=function(x,z,a,b)return math.sqrt((x-a)^2+(z-b)^2)end,
+        launchSiteConfidence=function()return 'HIGH'end,saveLaunchSites=function()end,print=function()end})
+    for round=1,2 do for _,x in ipairs({3099.46,3108.46,3126.46})do
+        record({firstX=x,firstY=92,firstZ=4094.46,dimension=0})
+    end end
+    assert(sites[1].launches==2 and sites[2].launches==2 and sites[3].launches==2 and not sites[4])
+    sites[1].verified={};sites[1].x=3102
+    assert(record({firstX=3099.46,firstY=92,firstZ=4094.46,dimension=0})==sites[1])
+    assert(record({firstX=3099.46,firstY=92,firstZ=4094.46,dimension=1})~=sites[1])
+end)
+
 if failures > 0 then error(tostring(failures) .. ' central regression tests failed') end

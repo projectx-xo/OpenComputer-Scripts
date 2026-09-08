@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.6.4"
+local VERSION = "3.6.5"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -71,7 +71,7 @@ local LAUNCH_SITE_MAX_ACQUIRE_Y = 160
 local LAUNCH_SITE_MIN_CLIMB = 35
 local LAUNCH_SITE_MIN_DEPARTURE = 40
 local LAUNCH_SITE_CONFIRM_SAMPLES = 2
-local LAUNCH_SITE_MERGE_DISTANCE = 100
+local LAUNCH_SITE_MERGE_DISTANCE = 4
 
 local IFF_MATCH_WINDOW = 30
 local IFF_HEADING_TOLERANCE = 30
@@ -445,8 +445,9 @@ local function recordLaunchSite(track)
     local best = nil
     local bestDistance = nil
     for _, site in pairs(launchSites) do
-        local distance = horizontalDistance(site.x, site.z, track.firstX, track.firstZ)
-        if distance <= LAUNCH_SITE_MERGE_DISTANCE
+        local origin = site.launchOrigin or site.radarEstimate or site
+        local distance = horizontalDistance(origin.x, origin.z, track.firstX, track.firstZ)
+        if site.dimension == track.dimension and distance <= LAUNCH_SITE_MERGE_DISTANCE
             and (not bestDistance or distance < bestDistance)
         then
             best = site
@@ -461,6 +462,8 @@ local function recordLaunchSite(track)
             y = track.firstY,
             z = track.firstZ,
             dimension = track.dimension,
+            launchOrigin = {x=track.firstX, y=track.firstY, z=track.firstZ},
+            verificationRadius = LAUNCH_SITE_MERGE_DISTANCE,
             launches = 0,
             firstDetected = now(),
         }
@@ -468,6 +471,10 @@ local function recordLaunchSite(track)
         nextLaunchSiteId = nextLaunchSiteId + 1
     end
 
+    if not best.launchOrigin then
+        local origin = best.radarEstimate or best
+        best.launchOrigin = {x=origin.x,y=origin.y,z=origin.z}
+    end
     local oldCount = tonumber(best.launches) or 0
     local newCount = oldCount + 1
     if oldCount > 0 and not best.verified then
