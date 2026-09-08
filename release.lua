@@ -1,12 +1,13 @@
 return {
-    version = "3.8.0",
-    ref = "f11216952ccb49748d45d86215a72e9cee60e29f",
+    version = "3.9.0",
+    ref = "98c0b320bffc81bfe579e27ae8b3609ba60f3b43",
     files = {
-        ["central/central.lua"] = {size = 124263, checksum = "e0006bd4"},
+        ["central/central.lua"] = {size = 126649, checksum = "742f8933"},
         ["central/hologram.lua"] = {size = 19242, checksum = "128e2c92"},
         ["central/site_intel.lua"] = {size = 5341, checksum = "e81a42c4"},
         ["central/nuclear.lua"] = {size = 4769, checksum = "8e8a7dbd"},
-        ["bootstrap/bootstrap.lua"] = {size = 38190, checksum = "8e321c0f"},
+        ["central/team_assets.lua"] = {size = 3718, checksum = "de3e5bbc"},
+        ["bootstrap/bootstrap.lua"] = {size = 39486, checksum = "90b6b79b"},
         ["runtime/manifest.lua"] = {size = 487, checksum = "a6a97ce6"},
         ["runtime/strike.lua"] = {size = 41774, checksum = "0047b4f1"},
         ["runtime/launchpad.lua"] = {size = 7719, checksum = "056120e4"},
