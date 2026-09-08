@@ -174,6 +174,20 @@ test('radomes work alone, alongside normal radars, and after hardware refresh',f
     r.stop()
 end)
 
+test('radome payload classification reaches radar telemetry and survives ordinary radar observations',function()
+    local payload='UNKNOWN'
+    local r,ctx,sent,tick=loadRuntime('runtime/radar.lua',{radar={kind='ntm_radome',proxy={
+        getAmount=function()return 1 end,
+        getTrackedEntityAtIndex=function()return false,10,100,20,4,'missile',12,'12345678-1234-1234-1234-123456789abc',0,payload end}}})
+    r.start(ctx);tick(1)
+    assert(not assert(load('return '..sent[#sent][3]))().track.payloadClass)
+    payload='THERMONUCLEAR';tick(2)
+    local track=assert(load('return '..sent[#sent][3]))().track
+    assert(track.payloadClass=='THERMONUCLEAR' and track.typeName:find('THERMONUCLEAR',1,true))
+    payload='UNKNOWN';tick(3)
+    assert(assert(load('return '..sent[#sent][3]))().track.payloadClass=='THERMONUCLEAR')
+end)
+
 test('radar observations carry session and increasing sample sequence', function()
     local x=0
     local r,ctx,sent,tick=loadRuntime('runtime/radar.lua',{radar={kind='ntm_radar',proxy={
@@ -201,12 +215,20 @@ test('radar identity survives overlapping contacts and reaches the ABM callback'
     x=6000;tick(2);assert(r.status('full').activeTrackCount==2,'fast entity lost identity')
     local called=0;local p=pad()
     p.getTargetingInfo=function()return true,0 end
-    p.launchTracked=function(id,u,dim)assert(id==1 and u==uuid and dim==0);called=called+1;return true end
+    p.launchTracked=function(id,u,dim)assert(id==1 and u==uuid and dim==0);called=called+1;return true,'LAUNCHED','shot-uuid' end
     local abm,c,replies=loadRuntime('runtime/launchpad.lua',{p={kind='ntm_launch_pad',proxy=p}})
     c.role='defense';abm.start(c);assert(abm.status().entityTargeting)
     abm.onMessage('C','LAUNCH_ENTITY',serialize(first));assert(called==0)
     abm.onMessage('C','ARM');abm.onMessage('C','LAUNCH_ENTITY',serialize(first))
     assert(called==1 and replies[#replies][2]=='LAUNCH_RESULT' and replies[#replies][3]==true and not abm.busy())
+    assert(replies[#replies][6]=='shot-uuid','interceptor identity lost')
+    p.getInterceptorStatus=function(shot,id,u,dim)assert(shot=='shot-uuid' and id==1 and u==uuid and dim==0);return 'MISS'end
+    local query=serialize({interceptor='shot-uuid',entityId=1,entityUuid=uuid,dimension=0})
+    abm.onMessage('C','INTERCEPT_STATUS',query,'poll-1')
+    assert(replies[#replies][3]=='MISS' and replies[#replies][4]=='poll-1')
+    p.getInterceptorStatus=nil
+    abm.onMessage('C','INTERCEPT_STATUS',query,'poll-2')
+    assert(replies[#replies][3]=='UNKNOWN' and replies[#replies][4]=='poll-2','old callback absence reported a miss')
     p.launchTracked=function()return false,'TARGET_LOST'end
     abm.onMessage('C','ARM');abm.onMessage('C','LAUNCH_ENTITY',serialize(first))
     assert(replies[#replies][3]==false and not abm.busy(),'lost target fell back to coordinate fire')
@@ -236,5 +258,24 @@ test('combined satellite scan and finding fields use real HBM callback positions
     r.onMessage('CENTRAL','SCAN_RESULTS',1,'results')
     local reply=sent[#sent];assert(reply[2]=='SCAN_RESULTS');assert(reply[4]=='results')
     assert(reply[3]:find('MISSILE',1,true) and reply[3]:find('hbm:test',1,true) and reply[3]:find('508',1,true))
+end)
+test('verification frames correlate scan requests and page exact target types',function()
+    local state='IDLE'
+    local r,ctx,sent,advance=loadRuntime('runtime/intel.lua',{sat={kind='ntm_satlink',proxy={
+        isConnected=function()return true end,getType=function()return 'COMBINED_INTEL' end,
+        intelStatus=function()return state,1,1,100 end,intelSetTarget=function()return true end,
+        intelStartScan=function()state='RUNNING';return true end,
+        intelSummary=function()return 'COMBINED;100;200;100%' end,
+        intelFindingCount=function()return 1 end,
+        intelGetFinding=function()return true,'SILO_HATCH',1,101,40,202,101,40,202,false,true,false,true,false,'SILO_HATCH','hbm:tile.silo_hatch',1 end}}})
+    r.start(ctx);r.onMessage('CENTRAL','SCAN',100,200,'request-1')
+    state='COMPLETE';advance(2);r.tick()
+    local frame=sent[#sent][3]
+    assert(frame.request=='request-1' and frame.targetX==100 and frame.targetZ==200)
+    r.onMessage('CENTRAL','SCAN_MODEL',frame.id,'verification:1','page-1')
+    local p=sent[#sent]
+    assert(p[5]=='page-1' and p[6]=='101,40,202,101,40,202,1,SILO_HATCH,100,1,SILO_HATCH' and p[7]==true)
+    r.onMessage('CENTRAL','SCAN',100,200,'request-2');state='COMPLETE';advance(4);r.tick()
+    assert(sent[#sent][3].request=='request-2' and sent[#sent][3].id~=frame.id,'repeated target reused old frame')
 end)
 if failures>0 then error(failures..' runtime tests failed') end

@@ -2,9 +2,36 @@
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 
+For the current full upgrade procedure and automatic enrollment, see [STRATCOM 3.6.0](docs/release-3.6.0.md).
+
 Version 3 runs as an OpenOS boot service. The console attaches to that service; closing it leaves the network and runtime operating. Installed software starts from disk before update checks. Application updates restart the application, without rebooting the computer.
 
 ## Install this preview
+
+For a multiplayer team network, create one trusted key file outside Minecraft and copy it to removable OpenComputers media:
+
+```text
+STRATCOM-KEY-1
+network=BLUE
+key=<64 random hexadecimal characters>
+```
+
+Use 32 bytes from a cryptographically secure random source for `key`. Install each field machine locally with that medium; field nodes retain only a key derived for their physical computer address. CENTRAL retains the team root key.
+
+```sh
+lua /tmp/stratcom-install.lua central --network BLUE --key-file /mnt/team/stratcom.key -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
+lua /tmp/stratcom-install.lua node --network BLUE --key-file /mnt/team/stratcom.key -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
+```
+
+Provision field nodes first during downtime and CENTRAL last, then remove the key medium. A secured installation rejects legacy and wrong-team traffic without falling back. Installations without a key continue in protocol-v2 compatibility mode and display `INSECURE LEGACY NETWORK`.
+
+For a new field node, connect its hardware and either a modem or a Satellite Ground Station tuned to the Communications Satellite. The automatic installer lets CENTRAL select its role and name:
+
+```sh
+lua /tmp/stratcom-install.lua node -- --source "https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/codex/stratcom-reliability/release.lua"
+```
+
+One ordinary launch pad containing an Anti Ballistic Missile becomes `ABM-A#`; a pad containing another missile or a multi-pad/custom-pad group becomes `SILO-S#`; radar hardware becomes `RADAR-##`; and a ground station tuned to a combined intelligence satellite becomes `INTEL-#`. Empty single launch pads and machines with conflicting hardware wait for correction instead of being assigned. Existing explicit `node <role> <id>` installs remain supported.
 
 Run these in the **OpenOS shell**, one line at a time. These are script invocations, not lines for the interactive `lua>` prompt.
 
@@ -31,7 +58,15 @@ lua /usr/bin/stratcom.lua
 | `radar` | `RADAR-1` | One or more `ntm_radar` components |
 | `intel` | `INTEL-1` | `ntm_satlink` connected to a `COMBINED_INTEL` satellite |
 
-Every machine needs OpenOS with its thread library and a modem. Internet is needed for online installation and automatic application-bundle downloads. Field-node runtime deployment still travels over the mesh from CENTRAL.
+Every machine needs OpenOS with its thread library and at least one transport: a modem or an `ntm_satlink` ground station. Internet is needed for online installation and automatic application-bundle downloads. Field-node runtime deployment travels over the available STRATCOM transport.
+
+After installation, STRATCOM can use a modem, the Communications Satellite, or both. Satellite transport requires an `ntm_satlink` ground station at CENTRAL and at each remote node, all tuned to the same Communications Satellite frequency. When both transports deliver the same packet, its envelope ID ensures it is processed once. The satellite carries communications only; it does not transport ME items or propellant.
+
+An INTEL node needs its Combined Intelligence Satellite ground station for scanning. If it communicates with CENTRAL over SATCOM, give it a second ground station tuned to the Communications Satellite; otherwise use a modem for transport.
+
+Secured networks authenticate every complete serialized packet with HMAC-SHA-256 before parsing it. Boot epochs and sequence windows reject captured traffic from old sessions and duplicate modem/SATCOM delivery. Network traffic remains visible to receivers and can still be jammed; the security boundary prevents other teams from forging accepted commands or telemetry.
+
+The system roles and authority boundaries are summarized in [Distributed STRATCOM architecture](docs/network-architecture.md).
 
 The installer enables `rc stratcom enable`, saves the machine configuration, installs the runtime and starts the service. It does not replace an existing node's ID, role, hardware mappings or installed runtime. A conflicting role/ID is rejected.
 
@@ -58,6 +93,10 @@ The directory must contain `release.lua` and the matching source files. The inst
 
 To reinstall stable service helpers later, first run `stratcom service stop`, check `stratcom service status` until it reports stopped, then rerun the installer. Application bundle updates do not rewrite the live supervisor. Existing payload classifications and launch-site records stay at their existing paths. The legacy `node/` v1 software is retained for reference only.
 
+If a node is online but CENTRAL cannot read its status, run `status` on the field node's own console to exercise its runtime locally. Bare `doctor` reports service and component information instead. CENTRAL reports a correlated runtime error as `STATUS FAILED` with the node's error text; `TIMEOUT` means no matching status result arrived before the deadline.
+
+CENTRAL repeats the control-claim handshake when a field node announces a new runtime session. Older CENTRAL builds can retain a stale claim after a node reboot or reinstall: discovery works but operational commands are ignored. Restarting CENTRAL's service clears that stale in-memory claim; then use `discover` and `status <node>` to reconnect.
+
 ## Daily use
 
 ```sh
@@ -74,6 +113,10 @@ Node runtime intent is separate: `stop SILO-S1` and `maintenance SILO-S1 on` on 
 Routine background messages go to a bounded log. Operational radar acquisitions, possible launch sites and automatic-defense engagement updates also appear immediately as `[ALERT]` messages with a short tone while the console is attached. Alerts preserve the current input and cursor position and remain visible while a command waits for a reply. Reattaching shows the retained alert history with timestamps; `logs` provides recent event details. The service retains 50 alerts independently of the 200-line general log; it reports when older alerts have expired. A radar acquisition means a contact was detected, not that its exact launch time or origin is known.
 
 The live-alert fix changes `central/central.lua`, `service/stratcom.lua` and `service/console.lua`. Update CENTRAL's stable service helpers using the installer with the service stopped, as well as installing the patched application bundle; application-only updates do not replace those helpers. Radar and defense node runtimes do not need replacement for this notification fix. `status` waits for a response and reports a timeout when fresh data is unavailable. Commands and confirmations are never replayed after a restart.
+
+### Silo supplies
+
+The workspace logistics extension loads named missile designs from ME storage, fuels a requested number of launchers from local propellant tanks, and reclaims unused fuel. See [Silo group logistics](docs/silo-logistics.md) for hardware, setup commands and deployment requirements. Preparation remains separate from arming and launching.
 
 ### CENTRAL commands
 
@@ -144,6 +187,12 @@ The full syntax is `counterstrike <class> <count> [site-id] [node] [interval-sec
 
 ### Radar-to-ABM entity handoff (3.5.0)
 
+When radar identifies a launch site, CENTRAL queues an intelligence verification scan using an online, claimed, idle `intel` node with a Combined Intelligence Satellite. `launchsite <id>` shows verification status. A verified pad, launch table, compact launcher or silo hatch within 100 blocks replaces the estimate with exact X/Y/Z coordinates; a loaded or stored missile is the fallback. Infrastructure is preferred, then the nearest finding. Findings must be point locations with at least 80% confidence. Flying missiles, assembly machines and broad structure bounds do not qualify.
+
+The original radar estimate is retained, and subsequent launches do not average away verified coordinates. Counterstrike preparation uses the refined location and still requires launch confirmation. Verification never launches a missile. Only one automatic scan runs at a time; busy or unavailable nodes are skipped. The queue is limited to 32 sites and waits up to five minutes for an available node. Scans time out after three minutes; inconclusive attempts keep the estimate and can be retried on a later launch after five minutes. Unloaded areas retain the satellite's existing coverage limits; this does not load chunks.
+
+This feature requires the updated CENTRAL bundle (including `central/site_intel.lua`) and updated `runtime/intel.lua` on intelligence nodes. Older runtimes lack the scan-request correlation and verification pages, so they cannot refine sites. No mod JAR change is required. These workspace changes must be included in a release before the normal updater can install them.
+
 With the matching HBM entity-handoff patch installed on the server and clients, deploy radar runtime 1.2.0 and defense runtime 2.3.0 from CENTRAL 3.5.0. `sync`, `deploy RADAR-01` and `deploy ABM-A1` update those example nodes. Existing 3.4.1 notification helpers do not need another reinstall.
 
 The radar reports the selected contact's entity ID, UUID and dimension with its observation. CENTRAL preserves that identity through tracking and arming; the ABM pad resolves and validates the same living missile before launching with its target already assigned. Missing, dead, changed or other-dimension targets fail without a coordinate fallback. No additional chunks are loaded to resolve a target. Flight and subsequent reacquisition follow HBM's native radar-linked ABM behavior.
@@ -151,6 +200,10 @@ The radar reports the selected contact's entity ID, UUID and dimension with its 
 `defense status` reports entity-handoff capability. For identity-bearing contacts on a capable pad, the 1,000-block seeker-search gate is bypassed, just as with native radar target assignment. Hostile/inbound confirmation, readiness, IFF and stale-observation checks still apply. Old radars or pads continue using the coordinate fallback below. Radar visibility and a launch acknowledgement never prove an interception.
 
 ### ABM acquisition range
+
+With the updated mod and defense runtime, a tracked ABM launch returns the interceptor's UUID. CENTRAL polls that exact interceptor and target once per second. Three matching reports over at least two seconds that the interceptor has ended while the exact target is still alive, plus fresh radar observations after the first report, confirm `MISS`. The target then qualifies again through normal inbound, IFF, auto-defense, range and readiness checks. A replenished ABM pad can fire another interceptor; this does not create ammunition or bypass fueling requirements.
+
+Living interceptors remain under observation beyond the old 20-second window. Thirty seconds without usable outcome telemetry reports `UNCONFIRMED`; older launches without interceptor identity retain the 20-second observation window. Neither case permits a speculative automatic retry for that track. Contact loss also remains unconfirmed. Restarting/unloading the pad or losing the target makes outcome evidence unavailable, not proof of a miss. The mod retains only the most recent tracked interceptor per pad in memory; it does not replay launches after restart. Install the updated mod JAR, CENTRAL and defense runtime together for confirmed re-engagement.
 
 CENTRAL 3.4.2 ships defense runtime 2.2.1, which calls `getPos` directly by component address. This handles cached proxies that omit the method despite the pad accepting it. Update CENTRAL, then `sync` and `deploy ABM-A1`; no mod update or helper reinstall is needed when upgrading from a complete 3.4.1 installation.
 
@@ -383,3 +436,7 @@ Radar runtime 1.2.1 discovers both `ntm_radar` (standard/large radars and older 
 ### Friendly launches crossing the protected center (3.5.2)
 
 CENTRAL now correlates a registered strike with the heading from the missile's first observed position toward the ordered target. A friendly launch may initially approach the protected center; this no longer disqualifies IFF. Matching still requires a new missile contact originating inside the protected region, horizontal motion, the configured heading tolerance, an active launch window and an unused salvo slot. Status-refreshed tracks receive the same IFF check before automatic engagement. Update CENTRAL only; node runtimes, service helpers and the mod JAR are unchanged.
+
+### Radome payload classification
+
+With the updated mod and radar runtime, Advanced Radome observations include `NUCLEAR` or `THERMONUCLEAR` for recognized missile warheads, and STRATCOM adds that classification to radar/defense type labels. Missile tier and automatic-defense eligibility remain unchanged. Custom nuclear and thermonuclear bunker-buster warheads are classified from their payload data; unknown and conventional payloads are not inferred nuclear. Standard radars retain their old detection capability, and older callbacks remain supported. These changes require deploying the updated radar runtime and CENTRAL alongside matching mod JARs on server and clients.

@@ -108,6 +108,7 @@ local function mergeObservation(observations, incoming)
     end
 
     if best then
+        if incoming.payloadClass then best.payloadClass = incoming.payloadClass; best.typeName = incoming.typeName end
         if not contains(best.radars, incoming.radar) then
             table.insert(best.radars, incoming.radar)
         end
@@ -154,22 +155,23 @@ local function readObservations()
         if okAmount then
             amount = tonumber(amount) or 0
             for index = 1, amount do
-                local ok, isPlayer, x, y, z, typeId, name, entityId, entityUuid, dimension =
+                local ok, isPlayer, x, y, z, typeId, name, entityId, entityUuid, dimension, payloadClass =
                     pcall(component.invoke, radar.address, "getTrackedEntityAtIndex", index)
                 if not ok then
                     ok, isPlayer, x, y, z, typeId, name = safeCall(radar.proxy, "getEntityAtIndex", index)
-                    entityId, entityUuid, dimension = nil, nil, nil
+                    entityId, entityUuid, dimension, payloadClass = nil, nil, nil, nil
                 end
 
                 if ok and isPlayer ~= nil and tonumber(x) and tonumber(y) and tonumber(z) then
+                    if payloadClass ~= "NUCLEAR" and payloadClass ~= "THERMONUCLEAR" then payloadClass = nil end
                     mergeObservation(observations, {
-                        entityId = entityId, entityUuid = entityUuid, dimension = dimension,
+                        entityId = entityId, entityUuid = entityUuid, dimension = dimension, payloadClass = payloadClass,
                         isPlayer = isPlayer == true,
                         x = tonumber(x) or 0,
                         y = tonumber(y) or 0,
                         z = tonumber(z) or 0,
                         typeId = tonumber(typeId) or -1,
-                        typeName = typeName(typeId),
+                        typeName = typeName(typeId) .. (payloadClass and (" [" .. payloadClass .. "]") or ""),
                         name = name,
                         radar = radar.short,
                     })
@@ -183,7 +185,7 @@ end
 
 local function publicTrack(track)
     return {
-        entityId = track.entityId, entityUuid = track.entityUuid, dimension = track.dimension,
+        entityId = track.entityId, entityUuid = track.entityUuid, dimension = track.dimension, payloadClass = track.payloadClass,
         id = track.id,
         session = context.session,
         sequence = track.sequence,
@@ -225,7 +227,7 @@ local function acquireTrack(observation, timestamp)
     nextTrackId = nextTrackId + 1
 
     local track = {
-        entityId = observation.entityId, entityUuid = observation.entityUuid, dimension = observation.dimension,
+        entityId = observation.entityId, entityUuid = observation.entityUuid, dimension = observation.dimension, payloadClass = observation.payloadClass,
         id = id,
         sequence = 1,
         typeId = observation.typeId,
@@ -254,6 +256,10 @@ local function acquireTrack(observation, timestamp)
 end
 
 local function updateTrack(track, observation, timestamp)
+    if observation.payloadClass then
+        track.payloadClass = observation.payloadClass
+        track.typeName = observation.typeName
+    end
     local dt = timestamp - track.lastSeen
     if dt <= 0 then dt = POLL_INTERVAL end
 

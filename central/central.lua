@@ -7,6 +7,8 @@ local serialization = require("serialization")
 
 local options = ...
 if type(options) ~= "table" then options = {} end
+local auth = options.auth
+if not auth then local ok, loaded = pcall(require, "stratcom.auth"); if ok then auth = loaded end end
 local consolePrint = print
 local commandOutput = nil
 local commandFailed = false
@@ -27,9 +29,16 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.5.2"
-local PROTOCOL = 2
+local VERSION = "3.6.0"
 local CENTRAL_ID = "CENTRAL"
+local AUTH_PATH = "/home/stratcom/auth.key"
+local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
+local authState = auth and auth.readState(AUTH_PATH) or nil
+if filesystem.exists(AUTH_PATH) and not authState then error("Invalid STRATCOM authentication state") end
+if authState and authState.mode ~= "central" then error("CENTRAL has node authentication state") end
+local secure = authState ~= nil
+local PROTOCOL = secure and 3 or 2
+local authEpoch = secure and auth.promoteEpoch(AUTH_EPOCH_PATH, filesystem) or nil
 local DEFAULT_TTL = 6
 local SEEN_TTL = 30
 local PRUNE_INTERVAL = 10
@@ -103,12 +112,22 @@ end
 if not filesystem.exists(REPOSITORY_DIR) then filesystem.makeDirectory(REPOSITORY_DIR) end
 
 local modemAddress = component.list("modem")()
-if not modemAddress then
-    io.stderr:write("FATAL: No modem detected.\n")
+local modem = modemAddress and component.proxy(modemAddress) or nil
+local satlinks = {}
+local satlinkIterator, seenSatlinks = component.list("ntm_satlink"), {}
+for _ = 1, 16 do
+    local address = satlinkIterator()
+    if not address or seenSatlinks[address] then break end
+    seenSatlinks[address] = true
+    local proxy = component.proxy(address)
+    if type(proxy.getType) == "function" and type(proxy.broadcast) == "function" then
+        satlinks[#satlinks + 1] = {address=address, proxy=proxy}
+    end
+end
+if not modem and #satlinks == 0 then
+    io.stderr:write("FATAL: No modem or ntm_satlink transport detected.\n")
     return
 end
-
-local modem = component.proxy(modemAddress)
 local nodes = {}
 local hologram, hologramAddress
 local desiredRuntimes = {}
@@ -118,8 +137,11 @@ local engagementHistory = {}
 local activeEngagements = {}
 local pendingArm = nil
 local launchSites = {}
+local siteIntel
 local latestCounterstrike = nil
 local nodePreferences = {}
+local enrollments = {}
+local enrollmentStates = {}
 local pendingConfirmation = nil
 local PREFERENCES_PATH = "/home/stratcom/preferences.db"
 local nextLaunchSiteId = 1
@@ -128,6 +150,8 @@ local nextFriendlyExpectationId = 1
 local running = true
 local messageCounter = 0
 local seenMessages = {}
+local securePeers = {}
+local secureKeys = {}
 local lastPrune = 0
 
 local defense = {
@@ -142,7 +166,7 @@ local function now()
 end
 
 local function savePreferences()
-    local raw = serialization.serialize({nodes = nodePreferences, defense = defense, abmNode = ABM_NODE_ID, hologramAddress = hologramAddress})
+    local raw = serialization.serialize({nodes = nodePreferences, enrollments = enrollments, defense = defense, abmNode = ABM_NODE_ID, hologramAddress = hologramAddress})
     local path = PREFERENCES_PATH .. ".tmp"
     local f, err = io.open(path, "w")
     if not f then print("[CONFIG] Save failed: " .. tostring(err)); return false end
@@ -167,6 +191,7 @@ local function loadPreferences()
     local ok, saved = pcall(serialization.unserialize, raw)
     if not ok or type(saved) ~= "table" then return end
     if type(saved.nodes) == "table" then nodePreferences = saved.nodes end
+    if type(saved.enrollments) == "table" then enrollments = saved.enrollments end
     if type(saved.abmNode) == "string" then ABM_NODE_ID = saved.abmNode end
     if type(saved.hologramAddress) == "string" then hologramAddress = saved.hologramAddress end
     if type(saved.defense) == "table" then
@@ -435,6 +460,7 @@ local function recordLaunchSite(track)
             x = track.firstX,
             y = track.firstY,
             z = track.firstZ,
+            dimension = track.dimension,
             launches = 0,
             firstDetected = now(),
         }
@@ -444,7 +470,7 @@ local function recordLaunchSite(track)
 
     local oldCount = tonumber(best.launches) or 0
     local newCount = oldCount + 1
-    if oldCount > 0 then
+    if oldCount > 0 and not best.verified then
         best.x = ((best.x or 0) * oldCount + track.firstX) / newCount
         best.z = ((best.z or 0) * oldCount + track.firstZ) / newCount
         best.y = ((best.y or 0) * oldCount + (track.firstY or 0)) / newCount
@@ -457,6 +483,8 @@ local function recordLaunchSite(track)
     best.lastTypeName = track.typeName
     best.confidence = launchSiteConfidence(best.launches)
     saveLaunchSites()
+
+    if siteIntel then siteIntel.enqueue(best) end
 
     print("[RADAR] POSSIBLE LAUNCH SITE #" .. tostring(best.id)
         .. " @ X=" .. tostring(math.floor(best.x + 0.5))
@@ -516,14 +544,41 @@ local function validEnvelope(envelope)
         and type(envelope.payload) == "table"
 end
 
-local function transmitEnvelope(port, envelope)
-    local ok, encoded = pcall(serialization.serialize, envelope)
-    if not ok then return false end
-    local sent = modem.broadcast(port, "STRATCOM_NET", encoded)
-    return sent ~= false
+local function transmitWire(port, marker, encoded)
+    local sent = false
+    if modem then
+        local transmitted, result = pcall(modem.broadcast, port, marker, encoded)
+        sent = transmitted and result ~= false or sent
+    end
+    for _, station in ipairs(satlinks) do
+        local transmitted, count = pcall(station.proxy.broadcast, port, marker, encoded)
+        sent = transmitted and tonumber(count) and count > 0 or sent
+    end
+    return sent
 end
 
-local function originate(port, destination, kind, payload, ttl)
+local function transmitEnvelope(port, envelope, selectedPeer)
+    local ok, encoded = pcall(serialization.serialize, envelope)
+    if not ok then return false end
+    if not secure then return transmitWire(port, "STRATCOM_NET", encoded) end
+    local peer = selectedPeer or securePeers[string.upper(envelope.destination)]
+    if not peer or not peer.keyId or not peer.epoch then return false end
+    peer.sendSequence = (peer.sendSequence or 0) + 1
+    local nodeKey = peer.nodeKey or secureKeys[peer.keyId]
+    if not nodeKey then
+        nodeKey = auth.deriveNodeKey(authState.key, authState.networkId, peer.keyId)
+        secureKeys[peer.keyId] = nodeKey
+    end
+    peer.nodeKey = nodeKey
+    local frame = auth.sign(nodeKey, port, {
+        networkId=authState.networkId,keyId=peer.keyId,destination=envelope.destination,
+        senderEpoch=authEpoch,receiverEpoch=peer.epoch,sequence=peer.sendSequence,
+        hopLimit=envelope.ttl,body=encoded,
+    })
+    return transmitWire(port, "STRATCOM_AUTH", frame)
+end
+
+local function originate(port, destination, kind, payload, ttl, selectedPeer)
     local envelope = {
         protocol = PROTOCOL,
         id = nextMessageId(),
@@ -535,7 +590,7 @@ local function originate(port, destination, kind, payload, ttl)
     }
     seenMessages[envelope.id] = now()
     if pendingOperator and not pendingOperator.id then pendingOperator.id = envelope.id end
-    return transmitEnvelope(port, envelope), envelope.id
+    return transmitEnvelope(port, envelope, selectedPeer), envelope.id
 end
 
 local function sendMgmt(node, command, ...)
@@ -581,6 +636,7 @@ local function requestRuntimeStatus(node, force, detail)
     node.lastStatusRequest = now()
     node.pendingStatus = token
     node.statusComplete = nil
+    node.statusError = nil
     node.nextStatus = now() + STATUS_REQUEST_TIMEOUT
     if not sendOperational(node, "STATUS", detail or "summary", token) then node.pendingStatus = nil; return false end
     return token
@@ -597,9 +653,53 @@ local function pollRuntimeStatus()
     if selected then requestRuntimeStatus(selected) end
 end
 
-local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeState, intent, session)
+local function reservedNodeId(candidate)
+    local upper = string.upper(candidate)
+    if nodes[upper] or nodePreferences[upper] then return true end
+    for id, preference in pairs(nodePreferences) do
+        if string.upper(id) == upper or string.upper(tostring(preference.alias or "")) == upper then return true end
+    end
+    for _, assignment in pairs(enrollments) do
+        if string.upper(tostring(assignment.id or "")) == upper then return true end
+    end
+    return false
+end
+
+local function allocateNodeId(role)
+    local index = 1
+    while index <= 9999 do
+        local candidate
+        if role == "strike" then candidate = "SILO-S" .. index
+        elseif role == "defense" then candidate = "ABM-A" .. index
+        elseif role == "radar" then candidate = string.format("RADAR-%02d", index)
+        elseif role == "intel" then candidate = "INTEL-" .. index
+        else return nil end
+        if not reservedNodeId(candidate) then return candidate end
+        index = index + 1
+    end
+end
+
+local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeState, intent, session, identity)
     if not id then return nil end
     id = string.upper(tostring(id))
+    identity = type(identity) == "string" and identity ~= "" and identity or nil
+    if identity then
+        local assignment = enrollments[identity]
+        if assignment and (string.upper(tostring(assignment.id)) ~= id or tostring(assignment.role) ~= tostring(role)) then
+            print("[ENROLL] COLLISION: " .. identity .. " claimed " .. id)
+            return nil
+        end
+        for otherIdentity, other in pairs(enrollments) do
+            if otherIdentity ~= identity and string.upper(tostring(other.id or "")) == id then
+                print("[ENROLL] COLLISION: " .. id .. " is bound to another computer")
+                return nil
+            end
+        end
+        if not assignment then
+            enrollments[identity] = {id=id, role=tostring(role)}
+            if not savePreferences() then enrollments[identity] = nil; return nil end
+        end
+    end
     local node = nodes[id]
     local discovered = false
 
@@ -611,12 +711,15 @@ local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeS
 
     if session and node.retiredSessions and node.retiredSessions[session] then return nil end
     node.role = tostring(role or node.role or "unknown")
+    node.identity = identity or node.identity
     node.bootstrapVersion = tostring(bootstrapVersion or node.bootstrapVersion or "unknown")
     node.runtimeVersion = tostring(runtimeVersion or node.runtimeVersion or "none")
     node.runtimeState = tostring(runtimeState or node.runtimeState or "unknown")
     node.lastSeen = now()
     node.desiredState = intent or node.desiredState
     if session and node.session ~= session then
+        -- A restarted bootstrap forgets its controller; repeat the claim handshake.
+        node.claimed = false
         node.retiredSessions = node.retiredSessions or {}
         if node.session then node.retiredSessions[node.session] = now() end
         for retired, timestamp in pairs(node.retiredSessions) do
@@ -691,7 +794,8 @@ end
 local function deployNode(node)
     if not node or node.deploying or not node.claimed or not nodeOnline(node) then return false end
     if desiredState(node) ~= "running" then return false end
-    local busy = next(activeEngagements) ~= nil or node.armed == true or (node.armedCount or 0) > 0 or (node.strikeRemaining or 0)>0
+    local busy = next(activeEngagements) ~= nil or node.armed == true or (node.armedCount or 0) > 0 or (node.strikeRemaining or 0)>0 or (node.status and node.status.logisticsBusy)
+    if siteIntel and siteIntel.busy(node.id) then busy = true end
     for _, other in pairs(nodes) do if other.deploying then busy = true end end
     if busy then
         if not node.deployQueued then print("[DEPLOY] " .. node.id .. " queued until idle") end
@@ -787,6 +891,7 @@ local function applyRadarTrack(node, track)
         evaluatedSequence = previous and previous.evaluatedSequence,
         evaluatedUpdate = previous and previous.evaluatedUpdate,
         entityId = track.entityId, entityUuid = track.entityUuid, dimension = track.dimension,
+        payloadClass = track.payloadClass == "NUCLEAR" and "NUCLEAR" or track.payloadClass == "THERMONUCLEAR" and "THERMONUCLEAR" or nil,
         lastDefenseHoldReason = previous and previous.lastDefenseHoldReason,
         key = key,
         station = node.id,
@@ -810,6 +915,7 @@ local function applyRadarTrack(node, track)
         lastUpdate = now(),
         threatSamples = previous and previous.threatSamples or 0,
         lastEngaged = previous and previous.lastEngaged or nil,
+        reengageUnconfirmed = previous and previous.reengageUnconfirmed or nil,
         firstSeen = previous and previous.firstSeen or (now() - math.max(0, tonumber(track.age) or 0)),
         firstX = previous and previous.firstX or tonumber(track.x),
         firstY = previous and previous.firstY or tonumber(track.y),
@@ -984,7 +1090,7 @@ local function finishEngagement(engagement, state, detail)
     print("[DEFENSE] " .. state .. " " .. engagement.trackKey
         .. (detail and (" - " .. tostring(detail)) or ""))
     local site=launchSites[engagement.launchSiteId]
-    if state=="UNCONFIRMED" and engagement.firedAt and site then
+    if state=="UNCONFIRMED" and detail=="CONTACT_LOST_AFTER_ENGAGEMENT" and engagement.firedAt and site then
         latestCounterstrike=site.id
         print("[COUNTERSTRIKE] Contact lost after ABM launch; intercept unconfirmed. Possible launch site #"..site.id
             .." at "..math.floor(site.x+.5)..","..math.floor(site.z+.5).." | confidence="..tostring(site.confidence))
@@ -1123,6 +1229,7 @@ local function evaluateTrackForDefense(track)
     if track.threatSamples < DEFENSE_CONFIRM_SAMPLES then return end
 
     if activeEngagements[track.key] then return end
+    if track.reengageUnconfirmed then return end
     if track.lastEngaged and now() - track.lastEngaged < DEFENSE_REENGAGE_COOLDOWN then return end
 
     createEngagement(track, approach)
@@ -1137,15 +1244,32 @@ local function defenseTick()
     end
 
     for key, engagement in pairs(activeEngagements) do
+        if engagement.state == "FIRED" and engagement.interceptor and engagement.entityTarget
+            and (not engagement.nextOutcomePoll or now() >= engagement.nextOutcomePoll) then
+            local node = getNode(engagement.abmNode)
+            if node and nodeOnline(node) and node.session == engagement.abmSession then
+                if not engagement.outcomeToken or now() >= (engagement.outcomeDeadline or 0) then
+                    engagement.outcomeToken = nextMessageId()
+                    engagement.outcomeDeadline = now()+5
+                    local q=engagement.entityTarget
+                    sendOperational(node,"INTERCEPT_STATUS",serialization.serialize({interceptor=engagement.interceptor,
+                        entityId=q.entityId,entityUuid=q.entityUuid,dimension=q.dimension}),engagement.outcomeToken)
+                end
+            end
+            engagement.nextOutcomePoll=now()+1
+        end
         if engagement.state == "FIRED"
             and engagement.firedAt
-            and now() - engagement.firedAt >= DEFENSE_POST_LAUNCH_TIMEOUT
+            and now() - (engagement.lastOutcomeAt or engagement.firedAt) >= (engagement.interceptor and 30 or DEFENSE_POST_LAUNCH_TIMEOUT)
         then
             local track = radarTracks[key]
-            if track then
-                finishEngagement(engagement, "MISS", "HOSTILE_TRACK_STILL_ACTIVE_AFTER_OBSERVATION_WINDOW")
-                track.lastEngaged = now()
-            end
+            -- The observation window is not the interceptor's flight time.
+            -- Neither a surviving radar entry nor silence proves a miss or hit.
+            local fresh = track and track.lastUpdate and now() - track.lastUpdate <= RADAR_TRACK_STALE_AFTER
+            finishEngagement(engagement, "UNCONFIRMED", fresh
+                and "CONTACT_ACTIVE_AT_OBSERVATION_TIMEOUT"
+                or "RADAR_TELEMETRY_UNAVAILABLE_AT_OBSERVATION_TIMEOUT")
+            if track then track.lastEngaged = now(); track.reengageUnconfirmed = true end
         elseif engagement.state == "ARMING" and now() - engagement.createdAt > 5 then
             finishEngagement(engagement, "ABORTED", "ARM_TIMEOUT")
         elseif engagement.state == "LAUNCHING"
@@ -1172,8 +1296,43 @@ local function handleMgmtEnvelope(envelope)
     local source = string.upper(envelope.source)
     local payload = envelope.payload
 
+    if envelope.kind == "BOOT_ENROLL" then
+        local identity = tostring(payload[1] or "")
+        local role = tostring(payload[2] or "")
+        local state = tostring(payload[3] or "")
+        if identity == "" or not ({strike=true, defense=true, radar=true, intel=true})[role] then
+            local key = identity ~= "" and identity or source
+            if state ~= "" and enrollmentStates[key] ~= state then
+                enrollmentStates[key] = state
+                print("[ENROLL] " .. source .. " waiting: " .. state)
+            end
+            return
+        end
+        enrollmentStates[identity] = nil
+        local assignment = enrollments[identity]
+        if assignment and assignment.role ~= role then
+            print("[ENROLL] COLLISION: " .. identity .. " changed from " .. tostring(assignment.role) .. " to " .. role)
+            return
+        end
+        if not assignment then
+            local id = allocateNodeId(role)
+            if not id then print("[ENROLL] No available ID for " .. role); return end
+            assignment = {id=id, role=role}
+            enrollments[identity] = assignment
+            if not savePreferences() then enrollments[identity] = nil; return end
+            print("[ENROLL] Assigned " .. id .. " to " .. identity)
+        end
+        originate(MGMT_PORT, source, "MGMT", {"ASSIGN", identity, assignment.id, assignment.role})
+        return
+    end
+
+    if envelope.kind == "ENROLL_ERROR" then
+        print("[ENROLL] " .. source .. " failed: " .. tostring(payload[2] or payload[1] or "UNKNOWN"))
+        return
+    end
+
     if envelope.kind == "BOOT_HELLO" or envelope.kind == "BOOT_HEARTBEAT" then
-        local node = registerNode(source, payload[2], payload[3], payload[4], payload[5], payload[6], payload[7])
+        local node = registerNode(source, payload[2], payload[3], payload[4], payload[5], payload[6], payload[7], payload[8])
         if node and node.claimed then reconcileNode(node, false) end
         return
     end
@@ -1306,6 +1465,32 @@ local function handleRadarTrackEvent(node, encoded)
     node.activeTrackCount = count
 end
 
+local function handleInterceptorOutcome(node, payload)
+    for key, e in pairs(activeEngagements) do
+        if e.state=="FIRED" and e.abmNode==node.id and e.abmSession==node.session
+            and e.outcomeToken and payload[3]==e.outcomeToken then
+            e.outcomeToken=nil
+            if payload[2]=="IN_FLIGHT" or payload[2]=="MISS" then e.lastOutcomeAt=now() end
+            local track=radarTracks[key]
+            if payload[2]~="MISS" then e.missSamples=0;e.firstMiss=nil;return end
+            if not track or not e.entityTarget or track.entityUuid~=e.entityTarget.entityUuid
+                or track.entityId~=e.entityTarget.entityId or track.dimension~=e.entityTarget.dimension
+                or not track.lastUpdate or now()-track.lastUpdate>RADAR_TRACK_STALE_AFTER then return end
+            e.firstMiss=e.firstMiss or now()
+            e.missSamples=(e.missSamples or 0)+1
+            if e.missSamples>=3 and now()-e.firstMiss>=2 and track.lastUpdate>e.firstMiss then
+                finishEngagement(e,"MISS","INTERCEPTOR_ENDED_TARGET_SURVIVED")
+                track.reengageUnconfirmed=nil
+                track.lastEngaged=now()-DEFENSE_REENGAGE_COOLDOWN
+                track.threatSamples=0
+                track.evaluatedSequence=nil;track.evaluatedUpdate=nil
+                print("[DEFENSE] Miss confirmed; re-evaluating "..key.." for another interceptor when ready.")
+            end
+            return
+        end
+    end
+end
+
 local function handleRuntimeEnvelope(envelope)
     local node = getNode(envelope.source)
     if not node then return end
@@ -1313,8 +1498,11 @@ local function handleRuntimeEnvelope(envelope)
     local payload = envelope.payload
     local responseType = tostring(payload[1] or "")
     node.lastSeen = now()
+    if siteIntel then siteIntel.receive(node, payload) end
 
-    if responseType == "STATUS" then
+    if responseType == "INTERCEPT_STATUS" then
+        handleInterceptorOutcome(node,payload)
+    elseif responseType == "STATUS" then
         local ok, status = pcall(serialization.unserialize, payload[2])
         if ok and type(status) == "table" then
             if payload[3] and payload[3] ~= node.pendingStatus then return end
@@ -1326,6 +1514,7 @@ local function handleRuntimeEnvelope(envelope)
         end
     elseif responseType == "ERROR" and payload[3] and payload[3] == node.pendingStatus then
         node.statusError = tostring(payload[2])
+        node.statusComplete = payload[3]
         node.pendingStatus = nil
         node.nextStatus = now() + STATUS_INTERVAL
     elseif responseType == "SCAN_COMPLETE" then
@@ -1340,7 +1529,7 @@ local function handleRuntimeEnvelope(envelope)
             hologram.receive(node.id, table.unpack(payload, 2, 7))
         end
     elseif responseType == "SCAN" or responseType == "SCAN_STATUS" or responseType == "SCAN_RESULTS"
-        or responseType == "SCAN_STRUCTURE" or responseType == "HARDWARE" then
+        or responseType == "SCAN_STRUCTURE" or responseType == "HARDWARE" or responseType == "LOGISTICS" then
         node.lastReply = {kind = responseType, text = tostring(payload[2]), at = now(), token = payload[3]}
         print("[" .. node.id .. "] " .. tostring(payload[2]))
     elseif responseType == "RADAR_TRACK" then
@@ -1388,6 +1577,8 @@ local function handleRuntimeEnvelope(envelope)
                 engagement.state = "FIRED"
                 engagement.firedAt = now()
                 engagement.launchResult = "SUCCESS"
+                engagement.interceptor = type(payload[5])=="string" and payload[5]~="" and payload[5] or nil
+                engagement.abmSession = node.session
                 print("[DEFENSE] ABM fired for " .. engagement.trackKey)
             else
                 finishEngagement(engagement, "FAILED", "ABM_LAUNCH_FAILED")
@@ -1478,15 +1669,87 @@ local function handleEnvelope(port, envelope)
     commandOutput = output
 end
 
-local function onModemMessage(_, _, _, port, _, marker, encoded)
-    if (port ~= MGMT_PORT and port ~= OP_PORT) or marker ~= "STRATCOM_NET" then return end
+local function authenticatedPeer(source, keyId)
+    local peer = securePeers[source]
+    if peer and peer.keyId == keyId then return peer end
+    for _, known in pairs(securePeers) do
+        if known.keyId == keyId then securePeers[source] = known; return known end
+    end
+end
+
+local function identityMayUseSource(identity, source)
+    local own = enrollments[identity]
+    if own and string.upper(tostring(own.id or "")) ~= source then return false end
+    for otherIdentity, assignment in pairs(enrollments) do
+        if otherIdentity ~= identity and string.upper(tostring(assignment.id or "")) == source then return false end
+    end
+    return true
+end
+
+local function handleWire(port, marker, encoded)
+    if port ~= MGMT_PORT and port ~= OP_PORT then return end
+    if secure then
+        if marker ~= "STRATCOM_AUTH" then return end
+        local frame = auth.decode(encoded)
+        if not frame or frame.networkId ~= authState.networkId
+            or string.upper(frame.destination) ~= CENTRAL_ID then return end
+        local nodeKey = secureKeys[frame.keyId]
+        if not nodeKey then
+            nodeKey = auth.deriveNodeKey(authState.key, authState.networkId, frame.keyId)
+        end
+        if not auth.verify(nodeKey, port, frame) then return end
+        secureKeys[frame.keyId] = nodeKey
+        local ok, envelope = pcall(serialization.unserialize, frame.body)
+        if not ok or not validEnvelope(envelope) or string.upper(envelope.destination) ~= CENTRAL_ID
+            or envelope.ttl ~= frame.hopLimit then return end
+        local source = string.upper(envelope.source)
+        if envelope.kind == "AUTH_HELLO" then
+            if port ~= MGMT_PORT or tostring(envelope.payload[1] or "") ~= frame.keyId
+                or tonumber(envelope.payload[2]) ~= frame.senderEpoch
+                or (frame.receiverEpoch ~= 0 and frame.receiverEpoch ~= authEpoch)
+                or not identityMayUseSource(frame.keyId, source) then return end
+            local peer = authenticatedPeer(source, frame.keyId)
+            if peer and frame.senderEpoch < peer.epoch then return end
+            if not peer or frame.senderEpoch > peer.epoch then
+                peer = {keyId=frame.keyId,nodeKey=nodeKey,epoch=frame.senderEpoch,replay={epoch=frame.senderEpoch},
+                    sendSequence=peer and peer.sendSequence or 0}
+            end
+            if not auth.acceptSequence(peer.replay, frame.senderEpoch, frame.sequence) then return end
+            securePeers[source] = peer
+            originate(MGMT_PORT, source, "AUTH_WELCOME", {authEpoch, frame.senderEpoch}, DEFAULT_TTL, peer)
+            return
+        end
+        if not identityMayUseSource(frame.keyId, source) then return end
+        local peer = authenticatedPeer(source, frame.keyId)
+        if not peer or peer.epoch ~= frame.senderEpoch or frame.receiverEpoch ~= authEpoch
+            or not auth.acceptSequence(peer.replay, frame.senderEpoch, frame.sequence) then return end
+        if envelope.kind == "BOOT_ENROLL" and tostring(envelope.payload[1] or "") ~= frame.keyId then return end
+        if (envelope.kind == "BOOT_HELLO" or envelope.kind == "BOOT_HEARTBEAT")
+            and tostring(envelope.payload[8] or "") ~= frame.keyId then return end
+        handleEnvelope(port, envelope)
+        return
+    end
+    if marker ~= "STRATCOM_NET" then return end
     local ok, envelope = pcall(serialization.unserialize, encoded)
     if ok then handleEnvelope(port, envelope) end
 end
 
+local function onModemMessage(_, _, _, port, _, marker, encoded)
+    handleWire(port, marker, encoded)
+end
+
+local function onSatlinkMessage(_, _, _, port, marker, encoded)
+    handleWire(port, marker, encoded)
+end
+
 local function discover()
-    print("[NET] Broadcasting mesh discovery...")
-    originate(MGMT_PORT, "*", "MGMT", {"DISCOVER"})
+    if secure then
+        print("[NET] Sending authenticated discovery to known online sessions...")
+        for id in pairs(securePeers) do originate(MGMT_PORT, id, "MGMT", {"DISCOVER"}) end
+    else
+        print("[NET] Broadcasting mesh discovery...")
+        originate(MGMT_PORT, "*", "MGMT", {"DISCOVER"})
+    end
 end
 
 local function printHeader()
@@ -1498,6 +1761,7 @@ local function printHeader()
     print("Mgmt port:    " .. MGMT_PORT)
     print("Op port:      " .. OP_PORT)
     print("Mesh:         protocol " .. PROTOCOL .. " / TTL " .. DEFAULT_TTL)
+    print("Network auth: " .. (secure and ("REQUIRED / " .. authState.networkId) or "INSECURE LEGACY"))
     print("Deploy:       ACK/retry")
     print("Status poll:  " .. STATUS_INTERVAL .. "s")
     print("Strike:       payload-aware")
@@ -1818,13 +2082,14 @@ local function printLaunchSite(id)
     local site = launchSites[tonumber(id)]
     if not site then print("Launch site not found."); return end
     print("")
-    print("POSSIBLE LAUNCH SITE #" .. tostring(site.id))
+    print((site.verified and "VERIFIED LAUNCH SITE #" or "POSSIBLE LAUNCH SITE #") .. tostring(site.id))
     print("============================================================")
     print("Position:     X=" .. tostring(math.floor((site.x or 0) + 0.5))
         .. " Y=" .. tostring(math.floor((site.y or 0) + 0.5))
         .. " Z=" .. tostring(math.floor((site.z or 0) + 0.5)))
     print("Launches:     " .. tostring(site.launches or 0))
     print("Confidence:   " .. tostring(site.confidence or launchSiteConfidence(site.launches)))
+    print("Intelligence: " .. tostring(site.intelState or "Radar estimate; awaiting an available intelligence node"))
     print("Last station: " .. tostring(site.station or "---"))
     print("Last track:   " .. tostring(site.lastTrackId or "---"))
     print("Last type:    " .. tostring(site.lastTypeName or "---"))
@@ -1882,7 +2147,13 @@ local function awaitStatus(node, detail)
     local deadline = now() + STATUS_REQUEST_TIMEOUT
     while node.statusComplete ~= token and now() < deadline do event.pull(0.1) end
     if node.statusComplete ~= token then
+        commandFailed = true
         print("TIMEOUT: no fresh status from " .. node.id .. "; cached information was not confirmed.")
+        return false
+    end
+    if node.statusError then
+        commandFailed = true
+        print("STATUS FAILED: " .. node.id .. " | " .. node.statusError)
         return false
     end
     return true
@@ -1933,6 +2204,10 @@ local function confirmAction(token, action)
 end
 
 local function awaitRuntimeReply(node, command, arg1, arg2)
+    if command == "SCAN" and siteIntel and siteIntel.busy(node.id) then
+        print("Launch-site verification is using " .. node.id .. "; retry after it finishes.")
+        return false
+    end
     local token = nextMessageId()
     local sent
     if command == "SCAN" then sent = sendOperational(node, command, arg1, arg2, token)
@@ -2011,13 +2286,13 @@ local function executeStrike(node, class, count, x, z, interval)
     end
     print("")
     local expected = {}
-    for _, launcher in ipairs(selected) do expected[launcher.index] = launcher.missileName end
+    for _, launcher in ipairs(selected) do expected[launcher.index] = {item=launcher.missileName,hash=launcher.loadoutHash} end
     confirmAction("STRIKE", function()
         if not awaitStatus(node) then return end
         if not node.status or node.status.strikeScheduling~=true then print("REJECTED: strike runtime changed; deploy the updated runtime.");return end
         for index, item in pairs(expected) do
             local current = node.launchers and node.launchers[index]
-            if not current or not current.ready or current.missileName ~= item then
+            if not current or not current.ready or current.missileName ~= item.item or current.loadoutHash ~= item.hash then
                 print("REJECTED: launcher inventory changed; create a new strike plan.")
                 return
             end
@@ -2049,7 +2324,8 @@ local function executeCounterstrike(args)
         if node.role=="strike" and node.claimed and nodeOnline(node) and node.runtimeState=="running" then
             local fresh=node.lastStatus and now()-node.lastStatus<=STATUS_INTERVAL or awaitStatus(node)
             if fresh and node.multiLauncher and #selectPayloadLaunchers(node,class,count)>=count then
-                print("Possible launch site #"..site.id.." | confidence="..tostring(site.confidence).." | origin is an estimate")
+                print("Launch site #"..site.id.." | confidence="..tostring(site.confidence)
+                    .. (site.verified and " | satellite-verified target" or " | origin is an estimate"))
                 executeStrike(node,class,count,math.floor(site.x+.5),math.floor(site.z+.5),interval)
                 return
             end
@@ -2096,6 +2372,11 @@ local function printHelp()
     print("HBM table: hologram floor <Y|all> | cut <x:N|z:N|none> | terrain <on|off>")
     print("           hologram rotate <degrees> | scale <2-12> (OC views: cutaway|structure|findings)")
     print("           hologram show <node> | clear | bind <projector-address>")
+    print("Silo supplies: logistics <node> status|cancel")
+    print("  logistics <node> map <launcher> <transposer> <pad-side> <supply-side> <return-side>")
+    print("  logistics <node> me <launcher> <interface-address> <reserved-slot>")
+    print("  logistics <node> profile <name> <launcher> <supply-slot> <database> <database-slot>")
+    print("  logistics <node> prepare <profile> <count> | reclaim <launcher|all>")
     print("Setup: doctor [node] | hardware <node> | map <node> <label> <pad> <inventory> <side> [slot]")
     print("  alias <node> <name> | maintenance <node> on|off | defense node <node>")
     print("  confirm LAUNCH|STRIKE | cancel")
@@ -2146,6 +2427,23 @@ local function execute(line)
                 print(known.id .. " " .. known.role .. " " .. known.runtimeState .. " intent=" .. desiredState(known))
             end
         end
+    elseif command == "logistics" then
+        local node = getNode(args[2])
+        if not node or node.role ~= "strike" then print("Choose a strike node: logistics <node> status"); commandFailed = true; return end
+        local action = string.lower(args[3] or "status")
+        local request = {action=action}
+        if action == "map" then
+            request.launcher=tonumber(args[4]); request.transposerAddress=args[5]
+            request.padSide=tonumber(args[6]); request.supplySide=tonumber(args[7]); request.returnSide=tonumber(args[8])
+        elseif action == "me" then
+            request.launcher=tonumber(args[4]); request.meAddress=args[5]; request.meSlot=tonumber(args[6])
+        elseif action == "profile" then
+            request.name=args[4]; request.launcher=tonumber(args[5]); request.sourceSlot=tonumber(args[6])
+            request.databaseAddress=args[7]; request.databaseSlot=tonumber(args[8])
+        elseif action == "prepare" then request.name=args[4]; request.count=tonumber(args[5])
+        elseif action == "reclaim" then request.launcher=args[4]
+        elseif action ~= "status" and action ~= "cancel" then print("Unknown logistics action; see help"); commandFailed = true; return end
+        if not awaitRuntimeReply(node, "LOGISTICS", serialization.serialize(request)) then commandFailed = true end
     elseif command == "hardware" or command == "map" then
         local node = getNode(args[2]); if not node then print("Node not found."); return end
         if command == "hardware" then awaitRuntimeReply(node, "HARDWARE")
@@ -2160,7 +2458,15 @@ local function execute(line)
     elseif command == "alias" then
         local node = getNode(args[2]); if not node or not args[3] then print("Usage: alias <node> <name>"); return end
         local existing = getNode(args[3])
-        if existing and existing.id ~= node.id then print("Alias already used."); return end
+        local requested = string.upper(args[3])
+        local used = existing and existing.id ~= node.id
+        for identity, assignment in pairs(enrollments) do
+            if string.upper(tostring(assignment.id or "")) == requested and assignment.id ~= node.id then used = true end
+        end
+        for id, preference in pairs(nodePreferences) do
+            if id ~= node.id and string.upper(tostring(preference.alias or "")) == requested then used = true end
+        end
+        if used then print("Alias already used."); return end
         nodePreferences[node.id] = nodePreferences[node.id] or {}
         nodePreferences[node.id].alias = args[3]
         if savePreferences() then print(args[3] .. " -> " .. node.id) end
@@ -2303,11 +2609,11 @@ local function execute(line)
             end
             print("Launcher: L" .. launcher .. "  " .. tostring(launcherStatus.missileLabel))
             print("Target: X=" .. x .. " Z=" .. z)
-            local expected = launcherStatus.missileName
+            local expected, expectedHash = launcherStatus.missileName, launcherStatus.loadoutHash
             confirmAction("LAUNCH", function()
                 if not awaitStatus(node) then return end
                 local current = node.launchers and node.launchers[launcher]
-                if not current or not current.armed or not current.ready or current.missileName ~= expected then
+                if not current or not current.armed or not current.ready or current.missileName ~= expected or current.loadoutHash ~= expectedHash then
                     print("REJECTED: launcher readiness or payload changed."); return
                 end
                 awaitControl(node, OP_PORT, "LAUNCH_SILO", function() registerFriendlyExpectation(node, 1, x, z, "launch") end,
@@ -2347,15 +2653,41 @@ local function execute(line)
     else print("Unknown command. Type 'help'.") end
 end
 
-modem.open(MGMT_PORT)
-modem.open(OP_PORT)
+if modem then
+    modem.open(MGMT_PORT)
+    modem.open(OP_PORT)
+end
+for _, station in ipairs(satlinks) do
+    pcall(station.proxy.open, MGMT_PORT)
+    pcall(station.proxy.open, OP_PORT)
+end
 event.listen("modem_message", onModemMessage)
+if #satlinks > 0 then event.listen("satlink_message", onSatlinkMessage) end
 local deploymentTimer = event.timer(1, checkDeploymentTimeouts, math.huge)
 local statusTimer = event.timer(0.25, pollRuntimeStatus, math.huge)
 local pruneTimer = event.timer(PRUNE_INTERVAL, pruneSeen, math.huge)
 local defenseTimer = event.timer(1, defenseTick, math.huge)
+local siteIntelTimer
+if options.appDir then
+    local chunk, err = loadfile(options.appDir .. "/central/site_intel.lua")
+    if chunk then
+        siteIntel = chunk()({now=now, token=nextMessageId, nodes=function()return nodes end,
+            save=saveLaunchSites, log=print,
+            send=function(id, ...)return sendOperational(getNode(id), ...)end,
+            available=function(node, active)
+                return node.role == "intel" and node.claimed and nodeOnline(node) and node.session
+                    and node.runtimeState == "running" and desiredState(node) == "running" and not node.deploying
+                    and (active or (node.lastStatus and now()-node.lastStatus <= RADAR_TRACK_STALE_AFTER
+                        and node.status and node.status.ready and not node.status.busy
+                        and node.status.satelliteType == "COMBINED_INTEL"))
+            end})
+        siteIntelTimer = event.timer(1, siteIntel.tick, math.huge)
+    else print("[INTEL] Launch-site verification unavailable: " .. tostring(err)) end
+end
 
 loadPreferences()
+if secure then print("[AUTH] Authenticated network required: " .. authState.networkId)
+else print("[AUTH] WARNING: INSECURE LEGACY NETWORK") end
 local hologramTimer
 if options.appDir then
     local chunk, err = loadfile(options.appDir .. "/central/hologram.lua")
@@ -2379,8 +2711,9 @@ while running do
     if pendingConfirmation and now() > pendingConfirmation.expires then pendingConfirmation = nil end
     if options.setBusy then
         local busy = next(activeEngagements) ~= nil or pendingConfirmation ~= nil or (hologram and hologram.busy())
+        if siteIntel and siteIntel.busy() then busy = true end
         for _, node in pairs(nodes) do
-            if node.deploying or (nodeOnline(node) and (node.armed or (node.armedCount or 0) > 0 or (node.strikeRemaining or 0)>0)) then busy = true end
+            if node.deploying or (nodeOnline(node) and (node.armed or (node.armedCount or 0) > 0 or (node.strikeRemaining or 0)>0 or (node.status and node.status.logisticsBusy))) then busy = true end
         end
         options.setBusy(busy)
     end
@@ -2409,9 +2742,17 @@ defense.auto = false
 event.cancel(pruneTimer)
 if hologramTimer then event.cancel(hologramTimer) end
 event.cancel(defenseTimer)
+if siteIntelTimer then event.cancel(siteIntelTimer) end
 event.cancel(statusTimer)
 event.cancel(deploymentTimer)
 event.ignore("modem_message", onModemMessage)
-modem.close(OP_PORT)
-modem.close(MGMT_PORT)
+if #satlinks > 0 then event.ignore("satlink_message", onSatlinkMessage) end
+if modem then
+    modem.close(OP_PORT)
+    modem.close(MGMT_PORT)
+end
+for _, station in ipairs(satlinks) do
+    pcall(station.proxy.close, OP_PORT)
+    pcall(station.proxy.close, MGMT_PORT)
+end
 print("STRATCOM central stopped.")

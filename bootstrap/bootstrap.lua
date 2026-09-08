@@ -6,11 +6,14 @@ local computer = require("computer")
 local filesystem = require("filesystem")
 local serialization = require("serialization")
 local keyboard = require("keyboard")
+local auth = options.auth
+if not auth then local ok, loaded = pcall(require, "stratcom.auth"); if ok then auth = loaded end end
 
-local VERSION = "3.0.0"
-local PROTOCOL = 2
+local VERSION = "3.1.0"
 local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
+local AUTH_PATH = "/home/stratcom/auth.key"
+local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
 local RUNTIME_DIR = "/home/stratcom/runtime"
 local CURRENT_RUNTIME = RUNTIME_DIR .. "/current.lua"
 local PREVIOUS_RUNTIME = RUNTIME_DIR .. "/previous.lua"
@@ -40,8 +43,21 @@ if not filesystem.exists(RUNTIME_DIR) then
 end
 
 local config = dofile(CONFIG_PATH)
-local NODE_ID = string.upper(assert(config.id, "config.id is required"))
-local NODE_ROLE = assert(config.role, "config.role is required")
+local authState = auth and auth.readState(AUTH_PATH) or nil
+if filesystem.exists(AUTH_PATH) and not authState then error("Invalid STRATCOM authentication state") end
+if authState and authState.mode ~= "node" then error("Node has CENTRAL authentication state") end
+local secure = authState ~= nil
+local PROTOCOL = secure and 3 or 2
+local authEpoch = secure and auth.promoteEpoch(AUTH_EPOCH_PATH, filesystem) or nil
+local centralEpoch = nil
+local authSequence = 0
+local authReplay = nil
+local autoEnroll = config.autoEnroll == true and (not config.id or not config.role)
+local physicalIdentity = config.identity or (computer.address and computer.address()) or config.id
+if autoEnroll and not physicalIdentity then error("Automatic enrollment requires computer.address()") end
+physicalIdentity = tostring(physicalIdentity or "legacy")
+local NODE_ID = string.upper(tostring(config.id or ("PENDING-" .. physicalIdentity:sub(1, 8))))
+local NODE_ROLE = config.role or "unassigned"
 local MGMT_PORT = tonumber(config.managementPort or config.port) or 4510
 local OP_PORT = tonumber(config.operationalPort) or 4511
 local HEARTBEAT_INTERVAL = tonumber(config.heartbeatInterval) or 5
@@ -50,12 +66,22 @@ local SEEN_TTL = 30
 local PRUNE_INTERVAL = 10
 
 local modemAddress = component.list("modem")()
-if not modemAddress then
-    io.stderr:write("FATAL: No modem detected.\n")
+local modem = modemAddress and component.proxy(modemAddress) or nil
+local satlinks = {}
+local satlinkIterator, seenSatlinks = component.list("ntm_satlink"), {}
+for _ = 1, 16 do
+    local address = satlinkIterator()
+    if not address or seenSatlinks[address] then break end
+    seenSatlinks[address] = true
+    local proxy = component.proxy(address)
+    if type(proxy.getType) == "function" and type(proxy.broadcast) == "function" then
+        satlinks[#satlinks + 1] = {address=address, proxy=proxy}
+    end
+end
+if not modem and #satlinks == 0 then
+    io.stderr:write("FATAL: No modem or ntm_satlink transport detected.\n")
     return
 end
-
-local modem = component.proxy(modemAddress)
 local controllerId = nil
 local runtimeModule = nil
 local runtimeRunning = false
@@ -66,6 +92,47 @@ local lastHeartbeat = 0
 local lastPrune = 0
 local messageCounter = 0
 local seenMessages = {}
+local seenFrames = {}
+
+local function componentAddresses(kind)
+    local result = {}
+    local iterator, seen = component.list(kind), {}
+    for _ = 1, 64 do
+        local address = iterator()
+        if not address or seen[address] then break end
+        seen[address] = true
+        result[#result + 1] = address
+    end
+    table.sort(result)
+    return result
+end
+
+local function classifyHardware()
+    local radars = componentAddresses("ntm_radar")
+    for _, address in ipairs(componentAddresses("ntm_radome")) do radars[#radars + 1] = address end
+    local ordinary = componentAddresses("ntm_launch_pad")
+    local custom = componentAddresses("ntm_custom_launch_pad")
+    local intel = 0
+    for _, station in ipairs(satlinks) do
+        local ok, satelliteType = pcall(station.proxy.getType)
+        if ok and satelliteType == "COMBINED_INTEL" then intel = intel + 1 end
+    end
+
+    local families = (#radars > 0 and 1 or 0) + ((#ordinary + #custom) > 0 and 1 or 0) + (intel > 0 and 1 or 0)
+    local evidence = {radars=#radars, ordinaryPads=#ordinary, customPads=#custom, intelLinks=intel}
+    if families == 0 then return nil, "WAITING_FOR_HARDWARE", evidence end
+    if families > 1 then return nil, "AMBIGUOUS_HARDWARE", evidence end
+    if #radars > 0 then return "radar", "RADAR", evidence end
+    if intel > 0 then return "intel", "INTEL", evidence end
+    if #custom > 0 or #ordinary > 1 then return "strike", "LAUNCH_GROUP", evidence end
+
+    local ok, payload = pcall(component.invoke, ordinary[1], "getPayloadIdentity")
+    evidence.payload = ok and tostring(payload) or "unavailable"
+    if not ok or payload == "empty" then return nil, "WAITING_FOR_PAYLOAD", evidence end
+    if payload == "anti_ballistic" then return "defense", "ABM", evidence end
+    if payload == "other" then return "strike", "STRIKE", evidence end
+    return nil, "AMBIGUOUS_LAUNCH", evidence
+end
 
 local function now()
     return computer.uptime()
@@ -171,6 +238,9 @@ local function pruneSeen()
     for id, timestamp in pairs(seenMessages) do
         if timestamp < cutoff then seenMessages[id] = nil end
     end
+    for id, timestamp in pairs(seenFrames) do
+        if timestamp < cutoff then seenFrames[id] = nil end
+    end
     lastPrune = now()
 end
 
@@ -185,11 +255,33 @@ local function validEnvelope(envelope)
         and type(envelope.payload) == "table"
 end
 
+local function transmitWire(port, marker, encoded)
+    local sent = false
+    if modem then
+        local transmitted, result = pcall(modem.broadcast, port, marker, encoded)
+        sent = transmitted and result ~= false or sent
+    end
+    for _, station in ipairs(satlinks) do
+        local transmitted, count = pcall(station.proxy.broadcast, port, marker, encoded)
+        sent = transmitted and tonumber(count) and count > 0 or sent
+    end
+    return sent
+end
+
 local function transmitEnvelope(port, envelope)
     local ok, encoded = pcall(serialization.serialize, envelope)
     if not ok then return false end
-    modem.broadcast(port, "STRATCOM_NET", encoded)
-    return true
+    if not secure then return transmitWire(port, "STRATCOM_NET", encoded) end
+    if not centralEpoch and envelope.kind ~= "AUTH_HELLO" then return false end
+    authSequence = authSequence + 1
+    local frame = auth.sign(authState.key, port, {
+        networkId=authState.networkId,keyId=authState.identity,destination=envelope.destination,
+        senderEpoch=authEpoch,receiverEpoch=envelope.kind == "AUTH_HELLO" and 0 or centralEpoch,
+        sequence=authSequence,
+        hopLimit=envelope.ttl,body=encoded,
+    })
+    seenFrames[table.concat({authState.identity,authEpoch,authSequence}, ":")] = now()
+    return transmitWire(port, "STRATCOM_AUTH", frame)
 end
 
 local function originate(port, destination, kind, payload, ttl)
@@ -209,13 +301,44 @@ local function originate(port, destination, kind, payload, ttl)
 end
 
 local function relayEnvelope(port, envelope)
+    if secure then return end
     if envelope.ttl <= 0 then return end
     envelope.ttl = envelope.ttl - 1
     transmitEnvelope(port, envelope)
 end
 
+local function broadcastAuthHello()
+    originate(MGMT_PORT, CENTRAL_ID, "AUTH_HELLO", {physicalIdentity, authEpoch})
+    lastHeartbeat = now()
+end
+
 local function sendMgmt(messageType, ...)
     return originate(MGMT_PORT, CENTRAL_ID, messageType, {...})
+end
+
+local function saveConfig(updated)
+    local pending, backup = CONFIG_PATH .. ".pending", CONFIG_PATH .. ".previous"
+    local ok, err = writeText(pending, "return " .. serialization.serialize(updated))
+    if not ok then filesystem.remove(pending); return false, err end
+    if filesystem.exists(backup) then filesystem.remove(backup) end
+    ok, err = filesystem.rename(CONFIG_PATH, backup)
+    if not ok then filesystem.remove(pending); return false, err end
+    ok, err = filesystem.rename(pending, CONFIG_PATH)
+    if not ok then
+        local restored = filesystem.rename(backup, CONFIG_PATH)
+        filesystem.remove(pending)
+        return false, tostring(err) .. (restored and "" or "; CONFIG_RESTORE_FAILED")
+    end
+    config = updated
+    return true
+end
+
+local function broadcastEnrollment()
+    local role, state, evidence = classifyHardware()
+    originate(MGMT_PORT, CENTRAL_ID, "BOOT_ENROLL", {
+        physicalIdentity, role or "", state, serialization.serialize(evidence)
+    })
+    lastHeartbeat = now()
 end
 
 local function broadcastHello()
@@ -231,6 +354,7 @@ local function broadcastHello()
             runtimeState(),
             desiredState,
             runtimeSession,
+            physicalIdentity,
         }
     )
 end
@@ -248,6 +372,7 @@ local function broadcastHeartbeat()
             runtimeState(),
             desiredState,
             runtimeSession,
+            physicalIdentity,
         }
     )
     lastHeartbeat = now()
@@ -265,6 +390,8 @@ local function sendInfo()
         controller = controllerId,
         meshProtocol = PROTOCOL,
         meshTtl = DEFAULT_TTL,
+        authMode = secure and "required" or "legacy",
+        networkId = secure and authState.networkId or nil,
         desiredState = desiredState,
         previousVersion = readFirstLine(PREVIOUS_VERSION),
         rejectedVersion = readFirstLine(REJECTED_PATH),
@@ -304,20 +431,7 @@ local function startRuntime()
         config = config,
         saveConfig = function(value)
             local updated = value or config
-            local pending, backup = CONFIG_PATH .. ".pending", CONFIG_PATH .. ".previous"
-            local ok, err = writeText(pending, "return " .. serialization.serialize(updated))
-            if not ok then filesystem.remove(pending); return false, err end
-            if filesystem.exists(backup) then filesystem.remove(backup) end
-            ok, err = filesystem.rename(CONFIG_PATH, backup)
-            if not ok then filesystem.remove(pending); return false, err end
-            ok, err = filesystem.rename(pending, CONFIG_PATH)
-            if not ok then
-                local restored = filesystem.rename(backup, CONFIG_PATH)
-                filesystem.remove(pending)
-                return false, tostring(err) .. (restored and "" or "; CONFIG_RESTORE_FAILED")
-            end
-            config = updated
-            return true
+            return saveConfig(updated)
         end,
         session = session,
         id = NODE_ID,
@@ -490,6 +604,33 @@ local function managementCommand(source, payload)
     local arg1 = payload[2]
     local arg2 = payload[3]
 
+    if command == "ASSIGN" and source == CENTRAL_ID and autoEnroll then
+        local identity, assignedId, assignedRole = tostring(arg1 or ""), tostring(arg2 or ""), tostring(payload[4] or "")
+        local detectedRole = classifyHardware()
+        if identity ~= physicalIdentity or assignedRole ~= detectedRole
+            or not assignedId:match("^[%w_%-]+$") or #assignedId > 64 then
+            sendMgmt("ENROLL_ERROR", physicalIdentity, "INVALID_ASSIGNMENT")
+            return
+        end
+        local updated = {}
+        for key, value in pairs(config) do updated[key] = value end
+        updated.id = string.upper(assignedId)
+        updated.role = assignedRole
+        updated.identity = physicalIdentity
+        updated.autoEnroll = nil
+        local ok, err = saveConfig(updated)
+        if not ok then
+            sendMgmt("ENROLL_ERROR", physicalIdentity, "CONFIG_WRITE_FAILED: " .. tostring(err))
+            return
+        end
+        NODE_ID, NODE_ROLE, autoEnroll = updated.id, updated.role, false
+        controllerId = nil
+        sendMgmt("ENROLL_ACK", physicalIdentity, NODE_ID, NODE_ROLE)
+        broadcastHello()
+        log("Enrolled as " .. NODE_ID .. " / " .. NODE_ROLE)
+        return
+    end
+
     if command == "DISCOVER" and source == CENTRAL_ID then
         broadcastHello()
         return
@@ -597,17 +738,60 @@ local function handleEnvelope(port, envelope)
 end
 
 local function handleModemMessage(port, marker, encoded)
-    if (port ~= MGMT_PORT and port ~= OP_PORT) or marker ~= "STRATCOM_NET" then
+    if port ~= MGMT_PORT and port ~= OP_PORT then return end
+    if secure then
+        if marker ~= "STRATCOM_AUTH" then return end
+        local frame = auth.decode(encoded)
+        if not frame or frame.networkId ~= authState.networkId then return end
+        local frameId = table.concat({frame.keyId,frame.senderEpoch,frame.sequence}, ":")
+        local destination = string.upper(frame.destination)
+        if destination ~= NODE_ID and destination ~= "*" then
+            if not seenFrames[frameId] then
+                seenFrames[frameId] = now()
+                local forwarded = auth.forward(frame)
+                if forwarded then transmitWire(port, "STRATCOM_AUTH", forwarded) end
+            end
+            return
+        end
+        if frame.keyId ~= authState.identity or not auth.verify(authState.key, port, frame) then return end
+        local ok, envelope = pcall(serialization.unserialize, frame.body)
+        if not ok or not validEnvelope(envelope) or string.upper(envelope.source) ~= CENTRAL_ID
+            or string.upper(envelope.destination) ~= destination or envelope.ttl ~= frame.hopLimit then return end
+        if envelope.kind == "AUTH_WELCOME" then
+            if frame.receiverEpoch ~= authEpoch or tonumber(envelope.payload[1]) ~= frame.senderEpoch
+                or tonumber(envelope.payload[2]) ~= authEpoch then return end
+            if centralEpoch and frame.senderEpoch < centralEpoch then return end
+            if not centralEpoch or frame.senderEpoch > centralEpoch then
+                centralEpoch = frame.senderEpoch
+                authReplay = {epoch=centralEpoch}
+            end
+            if not auth.acceptSequence(authReplay, centralEpoch, frame.sequence) then return end
+            seenFrames[frameId] = now()
+            if autoEnroll then broadcastEnrollment() else broadcastHello(); broadcastHeartbeat() end
+            log("Authenticated with CENTRAL on network " .. authState.networkId)
+            return
+        end
+        if not centralEpoch or frame.senderEpoch ~= centralEpoch or frame.receiverEpoch ~= authEpoch
+            or not auth.acceptSequence(authReplay, centralEpoch, frame.sequence) then return end
+        seenFrames[frameId] = now()
+        handleEnvelope(port, envelope)
         return
     end
+    if marker ~= "STRATCOM_NET" then return end
 
     local ok, envelope = pcall(serialization.unserialize, encoded)
     if not ok then return end
     handleEnvelope(port, envelope)
 end
 
-modem.open(MGMT_PORT)
-modem.open(OP_PORT)
+if modem then
+    modem.open(MGMT_PORT)
+    modem.open(OP_PORT)
+end
+for _, station in ipairs(satlinks) do
+    pcall(station.proxy.open, MGMT_PORT)
+    pcall(station.proxy.open, OP_PORT)
+end
 
 if filesystem.exists(ACTIVATION_PATH) then
     local rejected = readFirstLine(ACTIVATION_PATH)
@@ -625,7 +809,7 @@ elseif not filesystem.exists(CURRENT_RUNTIME) and filesystem.exists(PREVIOUS_RUN
 end
 
 log("STRATCOM node " .. NODE_ID .. " / " .. NODE_ROLE .. " / bootstrap " .. VERSION)
-if desiredState == "running" and filesystem.exists(CURRENT_RUNTIME) then
+if not autoEnroll and desiredState == "running" and filesystem.exists(CURRENT_RUNTIME) then
     local ok, err = startRuntime()
     if not ok then error("Runtime startup failed: " .. tostring(err)) end
 end
@@ -669,8 +853,16 @@ local function localCommand(line)
     return false, "Commands: status, doctor, start, stop, maintenance, scan, hardware, map"
 end
 
-broadcastHello()
-broadcastHeartbeat()
+if secure then
+    log("Authenticated network required: " .. authState.networkId)
+    broadcastAuthHello()
+elseif autoEnroll then
+    broadcastEnrollment()
+else
+    log("WARNING: INSECURE LEGACY NETWORK")
+    broadcastHello()
+    broadcastHeartbeat()
+end
 
 while running do
     if options.stopping and options.stopping() then break end
@@ -718,6 +910,8 @@ while running do
         local marker = a5
         local encoded = a6
         handleModemMessage(port, marker, encoded)
+    elseif eventName == "satlink_message" then
+        handleModemMessage(a3, a4, a5)
     end
 
     if runtimeRunning and runtimeModule and type(runtimeModule.tick) == "function" then
@@ -731,7 +925,8 @@ while running do
     end
 
     if now() - lastHeartbeat >= HEARTBEAT_INTERVAL then
-        broadcastHeartbeat()
+        if secure then broadcastAuthHello()
+        elseif autoEnroll then broadcastEnrollment() else broadcastHeartbeat() end
     end
 
     if now() - lastPrune >= PRUNE_INTERVAL then
@@ -741,7 +936,13 @@ end
 
 stopRuntime()
 abortDeployment()
-modem.close(OP_PORT)
-modem.close(MGMT_PORT)
+if modem then
+    modem.close(OP_PORT)
+    modem.close(MGMT_PORT)
+end
+for _, station in ipairs(satlinks) do
+    pcall(station.proxy.close, OP_PORT)
+    pcall(station.proxy.close, MGMT_PORT)
+end
 log("Bootstrap stopped.")
 if runtimeFailure then error(runtimeFailure) end

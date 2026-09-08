@@ -15,17 +15,26 @@ local function run(steps, files, options, faults)
     local fs = {exists=function(p) return files[p]~=nil end, makeDirectory=function() end, remove=function(p) files[p]=nil; return true end, rename=function(a,b) if faults and faults[a] then return false,"rename failed" end files[b]=files[a];files[a]=nil;return true end}
     local serial = {serialize=function(x) if type(x)=="table" and x.id and not x.protocol then return '{id="'..x.id..'"}' end return x end,unserialize=function(x)return x end}
     env.loadfile=function(path) return load(files[path] or '',path,'t',env) end
-    env.dofile=function() return {id='N1',role='RADAR'} end
+    env.dofile=function() return files._configTable or {id='N1',role='RADAR'} end
     env.metrics=metrics
     env.print=function() end
-    local modules={filesystem=fs,serialization=serial,computer={uptime=function()return clock end},keyboard={keys={c=46},isControlDown=function()return true end},component={list=function()return function()return 'modem' end end,proxy=function()return {open=function()end,close=function()end,broadcast=function(_,_,e)sent[#sent+1]=e end}end}}
+    local modem={open=function()end,close=function()end,broadcast=function(_,_,e)sent[#sent+1]=e end}
+    local component={}
+    component.list=function(kind)
+        local values = files._components and files._components[kind] or (kind == 'modem' and {'modem'} or {})
+        local index=0
+        return function()index=index+1;return values[index]end
+    end
+    component.proxy=function(address)return files._proxies and files._proxies[address] or modem end
+    component.invoke=function(address,method,...)return component.proxy(address)[method](...)end
+    local modules={filesystem=fs,serialization=serial,computer={uptime=function()return clock end,address=function()return 'computer-12345678' end},keyboard={keys={c=46},isControlDown=function()return true end},component=component}
     modules.event={pull=function()
         cursor=cursor+1;clock=clock+1
         local s=steps[cursor]
         if not s then return 'key_down',nil,nil,46 end
         if type(s)=='function' then s(files,sent,metrics);return end
         if type(s)=='number' then clock=clock+s;return end
-        return 'modem_message',nil,nil,s.port or 4510,nil,'STRATCOM_NET',{protocol=2,id=tostring(cursor),source='CENTRAL',destination='N1',kind=s.kind or 'MGMT',ttl=1,payload=s}
+        return 'modem_message',nil,nil,s.port or 4510,nil,'STRATCOM_NET',{protocol=2,id=tostring(cursor),source='CENTRAL',destination=s.destination or 'N1',kind=s.kind or 'MGMT',ttl=1,payload=s}
     end}
     env.require=function(n)return assert(modules[n],n)end
     assert(load(source,'bootstrap','t',env))(options)
@@ -98,6 +107,19 @@ tests.config_save_preserves_previous=function()
  f2[base..'current.lua']=f[base..'current.lua']
  local restored,_,m2=run({},f2,nil,{['/home/stratcom/config.lua.pending']=true})
  eq(m2.saved,false);eq(restored['/home/stratcom/config.lua'],'config');eq(restored['/home/stratcom/config.lua.pending'],nil)
+end
+tests.automatic_enrollment_classifies_abm_and_persists_assignment=function()
+ local f={_configTable={autoEnroll=true},_components={modem={'modem'},ntm_launch_pad={'pad'}},
+  _proxies={pad={getPayloadIdentity=function()return 'anti_ballistic'end}}}
+ local disk,sent=run({{[1]='ASSIGN',[2]='computer-12345678',[3]='ABM-A1',[4]='defense',destination='PENDING-COMPUTER'},
+  {[1]='CLAIM',destination='ABM-A1'}},f)
+ assert(disk['/home/stratcom/config.lua']:find('ABM%-A1'))
+ local enrolled,hello=false,false
+ for _,e in ipairs(sent)do
+  if e.kind=='ENROLL_ACK' and e.source=='ABM-A1' then enrolled=true end
+  if e.kind=='BOOT_HELLO' and e.source=='ABM-A1' and e.payload[2]=='defense' then hello=true end
+ end
+ assert(enrolled and hello,'assignment did not become active')
 end
 tests.interrupted_activation_restores_matching_runtime_and_version=function()
  local f=files()

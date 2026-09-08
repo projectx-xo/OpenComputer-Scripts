@@ -4,6 +4,7 @@ local context
 local runtime = {}
 local PAGE_SIZE = 6
 local scanFrame, frameSequence, nextPoll = nil, 0, 0
+local scanRequest
 
 local function satellite()
     local addresses = {}
@@ -100,6 +101,11 @@ local function observeScan()
         local session = tostring(context.session or context.id)
         scanFrame = {id=session .. ":" .. frameSequence, sequence=frameSequence, session=session,
             summary=summary, address=address, modelVersion=2, native=native}
+        local targetX,targetZ=summary:match('^COMBINED;([^;]+);([^;]+);')
+        if scanRequest and tonumber(targetX)==scanRequest.x and tonumber(targetZ)==scanRequest.z then
+            scanFrame.request, scanFrame.targetX, scanFrame.targetZ = scanRequest.token, scanRequest.x, scanRequest.z
+        end
+        scanRequest = nil
         context.send(nil, "SCAN_COMPLETE", scanFrame)
     end
     return sat
@@ -124,20 +130,25 @@ local function modelPage(frame, page)
         end
         if #rows ~= count or count > 64 then error("Malformed structural page") end
         return table.concat(rows,"|"), count < 64 or index == 128
-    elseif (kind == "targets" or kind == "findings") and index <= 16 then
+    elseif (kind == "targets" or kind == "findings" or kind == "verification") and index <= 16 then
         local count = math.min(128, sat.intelFindingCount())
         for i=(index-1)*8+1, math.min(index*8,count) do
             local f={sat.intelGetFinding(i)}
             if not f[1] then error("Finding unavailable") end
-            if kind == "findings" or (f[15] and f[15] ~= "") or f[11] or f[13] then
+            if kind == "findings" or kind == "verification" or (f[15] and f[15] ~= "") or f[11] or f[13] then
                 local coordinates={}
                 for axis=4,9 do coordinates[#coordinates+1]=integer(f[axis],"Target coordinate") end
-                if kind == "findings" then
+                if kind == "findings" or kind == "verification" then
                     local classification=tostring(f[2])
                     if not classification:match('^[A-Z_]+$') or #classification>40 then error("Invalid finding classification") end
                     coordinates[7]=i;coordinates[8]=classification
                     coordinates[9]=math.floor(math.max(0,math.min(1,tonumber(f[3]) or 0))*100+.5)
                     coordinates[10]=integer(f[17] or 0,"Target count",0)
+                    if kind == "verification" then
+                        local target=tostring(f[15] or "")
+                        if not target:match("^[A-Z_]*$") then error("Invalid target type") end
+                        coordinates[11]=target~="" and target or "NONE"
+                    end
                 end
                 rows[#rows+1]=table.concat(coordinates,",")
             end
@@ -147,8 +158,8 @@ local function modelPage(frame, page)
     error("Model page out of range")
 end
 
-function runtime.start(ctx) context = assert(ctx); scanFrame=nil; frameSequence=0; nextPoll=0 end
-function runtime.stop() context = nil; scanFrame=nil end
+function runtime.start(ctx) context = assert(ctx); scanFrame=nil; scanRequest=nil; frameSequence=0; nextPoll=0 end
+function runtime.stop() context = nil; scanFrame=nil; scanRequest=nil end
 function runtime.tick()
     if not context or computer.uptime() < nextPoll then return end
     nextPoll=computer.uptime()+1
@@ -186,6 +197,7 @@ function runtime.onMessage(remote, command, arg1, arg2, arg3)
             accepted, detail = sat.intelStartScan()
             if not accepted then error(tostring(detail)) end
             scanFrame = nil
+            scanRequest = {token=token,x=x,z=z}
             return "Scan started at X=" .. x .. " Z=" .. z .. ". Use scan status, then scan results."
         elseif command == "SCAN_STATUS" then
             return progress(sat)

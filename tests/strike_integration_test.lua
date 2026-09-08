@@ -26,6 +26,14 @@ local nodeComponent={list=function(kind)local a=kind=='ntm_launch_pad' and {'p1'
     proxy=function(a)return pads[a] or inventory end}
 local modules={serialization={serialize=serialize,unserialize=unserialize},computer={uptime=function()return clock end}}
 local runtime=assert(loadfile('runtime/strike.lua','t',setmetatable({require=function(n)return n=='component' and nodeComponent or assert(modules[n])end},{__index=_G})))()
+-- Model a managed loadout's fingerprint in the status crossing the modem boundary.
+local designHash='design-A'
+local originalStatus=runtime.status
+runtime.status=function()
+    local status=originalStatus()
+    for _,launcher in ipairs(status.launchers) do launcher.loadoutHash=designHash end
+    return status
+end
 local replyTo
 local config={launchers={}}
 for i=1,4 do config.launchers[i]={padAddress='p'..i,inventoryAddress='i',side=i}end
@@ -58,18 +66,23 @@ local function fileOpen(p,mode)
     return {read=function()return files[p]end,write=function(_,s)files[p]=files[p]..s;return true end,flush=function()return true end,close=function()end}
 end
 local env=setmetatable({require=function(n)return assert(modules[n],n)end,io={open=fileOpen,stderr=io.stderr,write=function()end}},{__index=_G})
-local commands={'counterstrike nuclear 4 7 SILO-S2 3','confirm STRIKE','status SILO-S2'}
+local commands={'logistics SILO-S2 status','logistics SILO-S2 prepare missing 1','strike SILO-S2 nuclear 1 507 1709 3','confirm STRIKE','counterstrike nuclear 4 7 SILO-S2 3','confirm STRIKE','status SILO-S2'}
 local n=0
 assert(loadfile('central/central.lua','t',env))({appDir='.',ready=function()end,
     stopping=function()return clock>22 end,log=function(s)logs[#logs+1]=s end,
     nextCommand=function()
         if clock<2 or n>=#commands then return end
-        if n==1 then assert(#fired==0,'counterstrike fired before confirmation')end
+        if n==3 then designHash='design-B' end
+        if n==5 then assert(#fired==0,'changed design or counterstrike fired before confirmation')end
         n=n+1;return {id=n,line=commands[n]}
     end,reply=function(i,ok,s)replies[i]={ok=ok,text=s,at=clock}end})
-assert(replies[1].ok and replies[1].text:find('X=507 Z=1709',1,true) and replies[1].text:find('confirm STRIKE',1,true),replies[1].text)
-assert(replies[2].ok and replies[2].text:find('Queued 4 launches',1,true),replies[2].text)
-assert(replies[3].ok and replies[3].at<fired[4].at,'status waited for the whole salvo')
+assert(replies[1].ok and replies[1].text:find('Idle',1,true),replies[1].text)
+assert(not replies[2].ok and replies[2].text:find('UNKNOWN_LOADOUT',1,true),replies[2].text)
+assert(replies[3].ok and replies[3].text:find('confirm STRIKE',1,true),replies[3].text)
+assert(replies[4].text:find('launcher inventory changed',1,true),replies[4].text)
+assert(replies[5].ok and replies[5].text:find('X=507 Z=1709',1,true) and replies[5].text:find('confirm STRIKE',1,true),replies[5].text)
+assert(replies[6].ok and replies[6].text:find('Queued 4 launches',1,true),replies[6].text)
+assert(replies[7].ok and replies[7].at<fired[4].at,'status waited for the whole salvo')
 assert(#fired==4,'incorrect launch count')
 for i,f in ipairs(fired)do
     assert(f.x==507 and f.z==1709,'launch lost the detected coordinates')

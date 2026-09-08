@@ -158,6 +158,93 @@ test('slow status replies are not invalidated by the next background poll',funct
     assert(node.pendingStatus~=token and sent==2,'lost request did not expire')
 end)
 
+test('status errors finish the matching request and reach the operator without a false timeout',function()
+    local clock, lines, node = 0, {}, {id='SILO-S1',claimed=true,runtimeState='running',statusError='previous error'}
+    local env={now=function()return clock end,nodeOnline=function()return true end,
+        STATUS_INTERVAL=5,STATUS_REQUEST_TIMEOUT=15,nextMessageId=function()return 'fresh' end,
+        sendOperational=function()return true end,getNode=function()return node end,
+        print=function(line)lines[#lines+1]=line end}
+    env.requestRuntimeStatus=extract('requestRuntimeStatus','pollRuntimeStatus',env)
+    local receive=extract('handleRuntimeEnvelope','collectOperatorReply',env)
+    env.event={pull=function()
+        clock=clock+0.1
+        assert(node.statusError==nil,'new request retained old error')
+        receive({source=node.id,payload={'ERROR','unrelated error','old'}})
+        assert(node.statusError==nil,'stale error replaced pending status')
+        receive({source=node.id,payload={'ERROR','getEnergyInfo unavailable','fresh'}})
+    end}
+    local await=extract('awaitStatus','awaitControl',env)
+    assert(await(node)==false,'failed status reported success')
+    assert(clock<1,'matching error waited for timeout')
+    assert(env.commandFailed==true,'console command reported success')
+    local text=table.concat(lines,'\n')
+    assert(text:find('getEnergyInfo unavailable',1,true),'actual node error hidden')
+    assert(not text:find('TIMEOUT',1,true),'received error described as missing reply')
+end)
+
+test('confirmed interceptor failure releases the same surviving threat for reengagement',function()
+    local clock, finished=10,nil
+    local node={id='ABM',session='A'}
+    local track={entityId=5,entityUuid='target',dimension=0,lastUpdate=10}
+    local e={state='FIRED',abmNode='ABM',abmSession='A',entityTarget={entityId=5,entityUuid='target',dimension=0}}
+    local env={now=function()return clock end,activeEngagements={T=e},radarTracks={T=track},
+        RADAR_TRACK_STALE_AFTER=10,DEFENSE_REENGAGE_COOLDOWN=10,print=function()end}
+    env.finishEngagement=function(_,state)finished=state;env.activeEngagements.T=nil end
+    local receive=extract('handleInterceptorOutcome','handleRuntimeEnvelope',env)
+    e.outcomeToken='1';receive(node,{'INTERCEPT_STATUS','MISS','old'});assert(not e.missSamples)
+    for i=1,3 do
+        clock=9+i;track.lastUpdate=clock;e.outcomeToken=tostring(i)
+        receive(node,{'INTERCEPT_STATUS','MISS',tostring(i)})
+        if i<3 then assert(not finished,'single or immediate death report caused retry') end
+    end
+    assert(finished=='MISS' and not env.activeEngagements.T and track.lastEngaged==2 and track.threatSamples==0)
+    -- New threats still pass through normal automatic-defense qualification.
+    assert(not track.reengageUnconfirmed)
+end)
+
+test('unknown or surviving interceptor never confirms a miss',function()
+    for _,outcome in ipairs({'IN_FLIGHT','UNKNOWN','TARGET_UNAVAILABLE'}) do
+        local e={state='FIRED',abmNode='ABM',abmSession='A',outcomeToken='1',missSamples=2,firstMiss=1}
+        local receive=extract('handleInterceptorOutcome','handleRuntimeEnvelope',{
+            now=function()return 10 end,activeEngagements={T=e},radarTracks={},finishEngagement=function()error('false miss')end})
+        receive({id='ABM',session='A'},{'INTERCEPT_STATUS',outcome,'1'})
+        assert(e.missSamples==0 and e.firstMiss==nil)
+    end
+end)
+
+test('live interceptor monitoring outlasts the old flight timeout without launching again',function()
+    local sent=0
+    local e={state='FIRED',firedAt=1,lastOutcomeAt=99,interceptor='shot',entityTarget={entityId=1,entityUuid='target',dimension=0},
+        abmNode='ABM',abmSession='A'}
+    local run=extract('defenseTick','handleTrackLostForDefense',{
+        now=function()return 100 end,pruneFriendlyExpectations=function()end,defense={auto=false},
+        activeEngagements={T=e},radarTracks={},getNode=function()return {session='A'}end,nodeOnline=function()return true end,
+        nextMessageId=function()return 'poll'end,serialization={serialize=function(q)return q end},
+        sendOperational=function(_,command)assert(command=='INTERCEPT_STATUS');sent=sent+1 end,
+        finishEngagement=function()error('live flight ended on timer')end})
+    run();run();assert(sent==1,'poll burst or premature flight timeout')
+end)
+
+test('observation timeout cannot establish a miss, even with a fresh hostile contact',function()
+    for _, sample in ipairs({{lastUpdate=30},{lastUpdate=1},{},false}) do
+        local clock, outcome = 29, nil
+        local engagement={state='FIRED',firedAt=10,trackKey='R:1'}
+        local track=sample or nil
+        local tick=extract('defenseTick','handleTrackLostForDefense',{
+            now=function()return clock end,pruneFriendlyExpectations=function()end,
+            defense={auto=false},activeEngagements={['R:1']=engagement},radarTracks={['R:1']=track},
+            DEFENSE_POST_LAUNCH_TIMEOUT=20,RADAR_TRACK_STALE_AFTER=10,
+            finishEngagement=function(_,state,detail)outcome={state,detail}end})
+        tick();assert(not outcome,'observation ended early')
+        clock=30;tick()
+        assert(outcome and outcome[1]=='UNCONFIRMED','timeout falsely declared a miss or left engagement open')
+        local expected=track and track.lastUpdate==30 and 'CONTACT_ACTIVE_AT_OBSERVATION_TIMEOUT'
+            or 'RADAR_TELEMETRY_UNAVAILABLE_AT_OBSERVATION_TIMEOUT'
+        assert(outcome[2]==expected,'cached or missing contact described as live')
+        if track then assert(track.lastEngaged==30,'existing reengagement cooldown lost') end
+    end
+end)
+
 test('counterstrike suggestions require a fired interceptor and the same track origin',function()
     local lines={}
     local env={now=function()return 20 end,activeEngagements={},historyPush=function()end,
@@ -165,6 +252,9 @@ test('counterstrike suggestions require a fired interceptor and the same track o
     local finish=extract('finishEngagement','launchPendingEngagement',env)
     finish({trackKey='RADAR:2',launchSiteId=7},'UNCONFIRMED','CONTACT_LOST_AFTER_ENGAGEMENT')
     assert(env.latestCounterstrike==nil,'unacknowledged launch produced a retaliation suggestion')
+    finish({trackKey='RADAR:2',launchSiteId=7,firedAt=10},'UNCONFIRMED','CONTACT_ACTIVE_AT_OBSERVATION_TIMEOUT')
+    finish({trackKey='RADAR:2',launchSiteId=7,firedAt=10},'UNCONFIRMED','RADAR_TELEMETRY_UNAVAILABLE_AT_OBSERVATION_TIMEOUT')
+    assert(env.latestCounterstrike==nil,'observation timeout incorrectly reported lost contact')
     finish({trackKey='RADAR:2',launchSiteId=7,firedAt=10},'UNCONFIRMED','CONTACT_LOST_AFTER_ENGAGEMENT')
     assert(env.latestCounterstrike==7,'known origin did not produce a suggestion')
     assert(table.concat(lines,'\n'):find('counterstrike',1,true),'no operator hint')
@@ -237,6 +327,40 @@ test('a restarted radar cannot inherit an old track identity', function()
     assert(saved and not saved.friendly, 'friendly identity leaked across restart')
     local duplicate = apply(node, {id = 1, session = 'new', sequence = 1, x = 999})
     assert(not duplicate or duplicate.x == 5, 'duplicate overwrote newer observation')
+end)
+
+test('restarted field nodes are claimed again before accepting remote status',function()
+    local claims=0
+    local node={id='SILO-S1',session='old',claimed=true,desiredState='stopped',lastStatus=90,pendingStatus='old-request'}
+    local env={nodes={['SILO-S1']=node},now=function()return 100 end,radarTracks={},
+        sendMgmt=function(n,command)assert(n==node and command=='CLAIM');claims=claims+1 end,
+        print=function()end}
+    local register=extract('registerNode','deploymentChunk',env)
+    register('SILO-S1','strike','3.0.0','3.1.0','running','stopped','new')
+    assert(claims==1 and node.claimed==false,'restart retained stale claim and skipped handshake')
+    assert(node.lastStatus==nil and node.pendingStatus==nil,'old status survived restart')
+    assert(node.desiredState=='stopped','restart overwrote stop intent')
+    -- A heartbeat retries a lost claim; after acknowledgement it must not spam claims.
+    register('SILO-S1','strike','3.0.0','3.1.0','running','stopped','new')
+    assert(claims==2,'lost claim was not retried')
+    node.claimed=true
+    register('SILO-S1','strike','3.0.0','3.1.0','running','stopped','new')
+    assert(claims==2 and node.claimed,'same session unnecessarily lost ownership')
+    register('SILO-S1','strike','3.0.0','3.1.0','running','stopped','old')
+    assert(claims==2 and node.session=='new','retired heartbeat reset current ownership')
+end)
+
+test('new launch observations preserve satellite coordinates and enqueue verification',function()
+    local site={id=5,x=100,y=40,z=200,launches=3,verified={kind='LAUNCHPAD'}}
+    local enqueued
+    local record=extract('recordLaunchSite','evaluateLaunchSiteCandidate',{
+        launchSites={[5]=site},LAUNCH_SITE_MERGE_DISTANCE=100,now=function()return 100 end,
+        horizontalDistance=function(x,z,a,b)return math.sqrt((x-a)^2+(z-b)^2)end,
+        launchSiteConfidence=function()return 'HIGH'end,saveLaunchSites=function()end,print=function()end,
+        siteIntel={enqueue=function(s)enqueued=s end}})
+    record({firstX=105,firstY=90,firstZ=205})
+    assert(site.x==100 and site.y==40 and site.z==200,'radar averaged away exact target')
+    assert(site.launches==4 and enqueued==site)
 end)
 
 test('new radar observations retain the existing range-hold reason',function()

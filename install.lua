@@ -1,18 +1,25 @@
 -- Run from a checkout, or download this installer from the trusted source channel.
 local args = {...}
-local kind, role, id = args[1], args[2], args[3]
-local source,bundle
-for i=1,#args do
-    if args[i]=='--source' then assert(args[i+1], '--source requires URL');source=args[i+1] end
-    if args[i]=='--bundle' then assert(args[i+1] and args[i+1]~='', '--bundle requires directory');bundle=args[i+1] end
+local positional,source,bundle,network,keyFile={},nil,nil,nil,nil
+local i=1
+while i<=#args do
+    if args[i]=='--source' then assert(args[i+1], '--source requires URL');source=args[i+1];i=i+2
+    elseif args[i]=='--bundle' then assert(args[i+1] and args[i+1]~='', '--bundle requires directory');bundle=args[i+1];i=i+2
+    elseif args[i]=='--network' then assert(args[i+1], '--network requires ID');network=args[i+1];i=i+2
+    elseif args[i]=='--key-file' then assert(args[i+1], '--key-file requires path');keyFile=args[i+1];i=i+2
+    elseif args[i]=='--' then i=i+1
+    else positional[#positional+1]=args[i];i=i+1 end
 end
-assert(kind=='central' or kind=='node', 'usage: install.lua central | node <strike|defense|radar|intel> <id> [--source URL | --bundle DIRECTORY]')
-if kind=='node' then
+local kind, role, id = positional[1], positional[2], positional[3]
+local automatic = kind == 'node' and role == nil and id == nil
+assert(kind=='central' or kind=='node', 'usage: install.lua central | node [<strike|defense|radar|intel> <id>] [--network ID --key-file PATH] [--source URL | --bundle DIRECTORY]')
+if kind=='node' and not automatic then
     assert(({strike=true,defense=true,radar=true,intel=true})[role], 'invalid node role')
     assert(type(id)=='string' and id:match('^[%w_%-]+$') and #id<=64, 'invalid node id')
     id=id:upper()
 end
 assert(not (source and bundle),'choose --source or --bundle')
+assert(not network or keyFile, '--network requires --key-file')
 source=source or 'https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/release.lua'
 assert(source:match('^https://raw%.githubusercontent%.com/[%w_.%-]+/[%w_.%-]+/.+/release%.lua$'), 'invalid source URL')
 local root='/home/stratcom'
@@ -21,7 +28,7 @@ local fs=require('filesystem')
 local previous
 if fs.exists(root..'/config.lua') then previous=assert(loadfile(root..'/config.lua'))() end
 if previous then
-    assert(kind=='node' and tostring(previous.id):upper()==id and previous.role==role,
+    assert(kind=='node' and (automatic or (tostring(previous.id):upper()==id and previous.role==role)),
         'existing role/id differs; migrate configuration explicitly before installing')
 end
 if fs.exists(root..'/service-config.lua') then
@@ -56,8 +63,22 @@ local version,err
 if bundle then version,err=update.stageLocal(bundle,print) else version,err=update.stage(source,print) end
 assert(version,err or 'update staging failed')
 local dir=update.directory(version)
+local auth=assert(loadfile(dir..'/service/auth.lua'))()
+local authText
+if keyFile then
+    local fileNetwork,rootKey=auth.readKeyFile(keyFile)
+    if network then assert(network==fileNetwork,'network ID does not match key file') end
+    network=fileNetwork
+    if kind=='central' then authText=auth.stateText('central',network,'CENTRAL',rootKey)
+    else
+        local identity=assert(require('computer').address(),'computer address unavailable')
+        authText=auth.stateText('node',network,identity,auth.deriveNodeKey(rootKey,network,identity))
+    end
+    local existing=update.read(root..'/auth.key')
+    assert(not existing or existing==authText,'installed STRATCOM network key differs')
+end
 local helpers={['service/update.lua']='/usr/lib/stratcom/update.lua',['service/stratcom.lua']='/usr/lib/stratcom/service.lua',
-    ['service/rc.lua']='/etc/rc.d/stratcom.lua',['service/console.lua']='/usr/bin/stratcom.lua'}
+    ['service/auth.lua']='/usr/lib/stratcom/auth.lua',['service/rc.lua']='/etc/rc.d/stratcom.lua',['service/console.lua']='/usr/bin/stratcom.lua'}
 -- Do not replace stable code under an existing supervisor. A stopped service can
 -- be reinstalled; the currently loaded module stays in memory until next boot.
 local loaded=package.loaded['stratcom.service']
@@ -66,12 +87,17 @@ if loaded then
     assert(state=='stopped' or state=='failed','stop the service before reinstalling stable helpers')
 end
 for from,to in pairs(helpers) do update.write(to,assert(update.read(dir..'/'..from))) end
+if authText then update.write(root..'/auth.key',authText) end
 if kind=='node' and not previous then
-    update.write(root..'/config.lua',string.format('return {id=%q,role=%q,managementPort=4510,operationalPort=4511}\n',id,role))
+    if automatic then
+        update.write(root..'/config.lua','return {autoEnroll=true,managementPort=4510,operationalPort=4511}\n')
+    else
+        update.write(root..'/config.lua',string.format('return {id=%q,role=%q,managementPort=4510,operationalPort=4511}\n',id,role))
+    end
 end
 if not fs.exists(root..'/service-config.lua') then update.write(root..'/service-config.lua',string.format('return {kind=%q,autoUpdate=%s}\n',kind,tostring(not bundle))) end
 update.write(root..'/source.txt',source)
-if kind=='node' and not fs.exists(root..'/runtime/current.lua') then
+if kind=='node' and not automatic and not fs.exists(root..'/runtime/current.lua') then
     local manifest=assert(loadfile(dir..'/runtime/manifest.lua'))()
     local runtime=assert(manifest.roles[role],'role missing from runtime manifest')
     local text=assert(update.read(dir..'/'..runtime.path),'runtime missing')

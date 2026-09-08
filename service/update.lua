@@ -3,7 +3,7 @@ local fs = require('filesystem')
 local M = {}
 local root = '/home/stratcom'
 M.defaultSource = 'https://raw.githubusercontent.com/projectx-xo/OpenComputer-Scripts/main/release.lua'
-local required = {'central/central.lua','bootstrap/bootstrap.lua','runtime/manifest.lua','runtime/strike.lua','runtime/launchpad.lua','runtime/radar.lua','runtime/intel.lua','service/stratcom.lua','service/update.lua','service/rc.lua','service/console.lua','install.lua'}
+local required = {'central/central.lua','bootstrap/bootstrap.lua','runtime/manifest.lua','runtime/strike.lua','runtime/launchpad.lua','runtime/radar.lua','runtime/intel.lua','service/stratcom.lua','service/update.lua','service/auth.lua','service/rc.lua','service/console.lua','install.lua'}
 M.required = required
 function M.read(path)
     local f = io.open(path, 'r')

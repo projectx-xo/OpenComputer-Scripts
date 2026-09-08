@@ -29,7 +29,7 @@ local function harness()
    close=function()if files._closeFail==p then return nil,'close failed' end end}
  end}
  local fs={exists=function(p)return files[p]~=nil end,makeDirectory=function(p)if files[p] then return nil,'already exists' end files[p]=true;return true end,remove=function(p)files[p]=nil;return true end,rename=function(a,b)if files[a]==nil then return nil,'missing' end files[b]=files[a];files[a]=nil;return true end}
- local mods={filesystem=fs,computer={uptime=function()return clock end},internet={request=function(url)http=http+1;local s=net[url];if not s then error('offline')end;return function()local x=s;s=nil;return x end end}}
+ local mods={filesystem=fs,computer={uptime=function()return clock end,address=function()return 'computer-1'end},internet={request=function(url)http=http+1;local s=net[url];if not s then error('offline')end;return function()local x=s;s=nil;return x end end}}
  env.require=function(n)return assert(mods[n],n)end
  env.loadfile=function(p)
   if p=='service/update.lua' then return load(sources.update,p,'t',env)end
@@ -44,7 +44,7 @@ local function harness()
  return {files=files,net=net,env=env,mods=mods,u=u,step=step,http=function()return http end}
 end
 local function eq(a,b)assert(a==b,tostring(a)..' ~= '..tostring(b))end
-local paths={'central/central.lua','bootstrap/bootstrap.lua','runtime/manifest.lua','runtime/strike.lua','runtime/launchpad.lua','runtime/radar.lua','runtime/intel.lua','service/stratcom.lua','service/update.lua','service/rc.lua','service/console.lua','install.lua'}
+local paths={'central/central.lua','bootstrap/bootstrap.lua','runtime/manifest.lua','runtime/strike.lua','runtime/launchpad.lua','runtime/radar.lua','runtime/intel.lua','service/stratcom.lua','service/update.lua','service/auth.lua','service/rc.lua','service/console.lua','install.lua'}
 local sha=string.rep('a',40)
 local function release(h,v,app,overrides)
  local parts={'return {version="'..v..'",ref="'..sha..'",files={'}
@@ -104,6 +104,30 @@ function tests.install_preserves_config_and_rejects_role_change()
  install('node','radar','N1');eq(h.files['/home/stratcom/config.lua'],'return {id="N1",role="radar",custom="keep"}')
  eq(h.files['/home/stratcom/runtime/current.lua'],'saved runtime');eq(executions[1],'rc stratcom enable')
  local ok=pcall(install,'node','strike','N1');eq(ok,false)
+end
+function tests.fresh_automatic_node_install_defers_runtime_until_enrollment()
+ local h=harness();release(h,'fresh');h.env.package={loaded={}};h.env.print=function()end
+ h.mods.shell={execute=function()return true end};h.mods['stratcom.service']={start=function()return true end}
+ assert(load(read('install.lua'),'install','t',h.env))('node','--','--source',h.u.defaultSource)
+ eq(h.files['/home/stratcom/config.lua'],'return {autoEnroll=true,managementPort=4510,operationalPort=4511}\n')
+ eq(h.files['/home/stratcom/runtime/current.lua'],nil)
+end
+function tests.secure_node_install_stores_only_derived_key()
+ local h=harness();local auth=read('service/auth.lua');release(h,'secure',nil,{['service/auth.lua']=auth})
+ h.env.package={loaded={}};h.env.print=function()end
+ h.mods.shell={execute=function()return true end};h.mods['stratcom.service']={start=function()return true end}
+ local root=string.rep('01',32)
+ h.files['/mnt/team.key']='STRATCOM-KEY-1\nnetwork=BLUE\nkey='..root..'\n'
+ assert(load(read('install.lua'),'install','t',h.env))('node','--network','BLUE','--key-file','/mnt/team.key')
+ local installed=h.files['/home/stratcom/auth.key']
+ assert(installed and installed:find('node\nBLUE\ncomputer%-1\n'))
+ assert(not installed:find(root,1,true),'field node retained team root key')
+ local central=harness();release(central,'secure-central',nil,{['service/auth.lua']=auth})
+ central.env.package={loaded={}};central.env.print=function()end
+ central.mods.shell={execute=function()return true end};central.mods['stratcom.service']={start=function()return true end}
+ central.files['/mnt/team.key']=h.files['/mnt/team.key']
+ assert(load(read('install.lua'),'install','t',central.env))('central','--network','BLUE','--key-file','/mnt/team.key')
+ assert(central.files['/home/stratcom/auth.key']:find('central\nBLUE\nCENTRAL\n'..root,1,false))
 end
 function tests.post_ready_crash_rolls_back()
  local h=harness();installed(h,'local o=...;o.ready();while not o.stopping() do require("event").pull(0.1)end')

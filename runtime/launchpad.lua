@@ -154,6 +154,16 @@ function runtime.status()
 end
 
 function runtime.onMessage(remoteAddress, command, arg1, arg2)
+    if command == "INTERCEPT_STATUS" then
+        local ok, outcome = pcall(function()
+            local q=serialization.unserialize(arg1)
+            assert(type(q)=='table' and type(q.interceptor)=='string' and type(q.entityUuid)=='string'
+                and type(q.entityId)=='number' and type(q.dimension)=='number','INVALID_TARGET')
+            return component.invoke(launchPadAddress,'getInterceptorStatus',q.interceptor,q.entityId,q.entityUuid,q.dimension)
+        end)
+        context.send(remoteAddress,'INTERCEPT_STATUS',ok and outcome or 'UNKNOWN',arg2)
+        return
+    end
     if command == "PING" then
         context.send(remoteAddress, "PONG", context.role)
         return
@@ -185,11 +195,11 @@ function runtime.onMessage(remoteAddress, command, arg1, arg2)
             armed = false
             context.send(remoteAddress, "ERROR", "INVALID_TARGET"); return
         end
-        local invoked, success, reason = pcall(component.invoke, launchPadAddress, "launchTracked",
+        local invoked, success, reason, interceptor = pcall(component.invoke, launchPadAddress, "launchTracked",
             target.entityId, target.entityUuid, target.dimension)
         armed = false
         context.send(remoteAddress, "LAUNCH_RESULT", invoked and success == true, target.entityId,
-            invoked and reason or "TARGET_CALLBACK_FAILED")
+            invoked and reason or "TARGET_CALLBACK_FAILED", invoked and interceptor or nil)
         return
     end
 
