@@ -91,6 +91,11 @@ end
 local function observeScan()
     local sat, address = satellite()
     local _, state = progress(sat)
+    if state == "ERROR" and scanRequest then
+        local token = scanRequest.token
+        scanRequest = nil
+        context.send(nil, "ERROR", "Satellite scan failed (ERROR)", token)
+    end
     if state ~= "COMPLETE" then scanFrame = nil; return sat end
     local summary = tostring(sat.intelSummary())
     local native

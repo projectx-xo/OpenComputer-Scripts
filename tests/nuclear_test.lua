@@ -31,3 +31,7 @@ for _,mutate in ipairs({function(f)f.batch.session='old'end,function(f)f.detecto
 end
 f=fixture();f.batch.events[1].kind='MISSILE';f:report();f.clock=60;f.api.tick();assert(not f.api.busy(),'missile started damage scan')
 print('PASS nuclear events: validation, deduplication, ACK, delayed intel handoff, correlation, dimension, expiry and timeout')
+
+f=fixture();f:report();f.clock=60;f.api.tick()
+f.api.receive(f.node,{'ERROR','scan failed','old'});assert(f.api.busy())
+f.api.receive(f.node,{'ERROR','scan failed','request'});assert(not f.api.busy(),'failed scan retained lock')

@@ -293,6 +293,19 @@ test('verification frames correlate scan requests and page exact target types',f
     r.onMessage('CENTRAL','SCAN',100,200,'request-2');state='COMPLETE';advance(4);r.tick()
     assert(sent[#sent][3].request=='request-2' and sent[#sent][3].id~=frame.id,'repeated target reused old frame')
 end)
+test('failed scan reports the initiating token once and allows another scan',function()
+    local state='IDLE'
+    local r,ctx,sent,advance=loadRuntime('runtime/intel.lua',{sat={kind='ntm_satlink',proxy={
+        getType=function()return 'COMBINED_INTEL'end,isConnected=function()return true end,
+        intelStatus=function()return state,0,0,0 end,intelSetTarget=function()return true end,
+        intelStartScan=function()state='SCANNING';return true end}}})
+    r.start(ctx);r.onMessage('CENTRAL','SCAN',100,200,'failed-request')
+    state='ERROR';advance(2);r.tick()
+    assert(sent[#sent][2]=='ERROR' and sent[#sent][4]=='failed-request')
+    local count=#sent;advance(4);r.tick();assert(#sent==count)
+    r.onMessage('CENTRAL','SCAN',100,200,'retry-request');assert(state=='SCANNING')
+end)
+
 test('physical mapping pairs four identical inventories independently of address order',function()
     local devices={};local expected={4,2,1,3}
     for i=1,4 do
