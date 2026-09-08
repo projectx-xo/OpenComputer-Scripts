@@ -158,6 +158,14 @@ tests.local_map_builds_runtime_mapping_payload=function()
  run({},f,{ready=function()end,stopping=function()return done end,nextCommand=function()done=true;return{id=1,line='map Bravo pad inventory 2 3'}end,reply=function(_,ok,text)reply={ok,text}end})
  eq(reply[1],true);assert(reply[2]:find('saved',1,true))
 end
+tests.automatic_enrollment_classifies_nuclear_satellite=function()
+ local f={_configTable={autoEnroll=true},_components={modem={'modem'},ntm_satlink={'station'}},
+  _proxies={station={getType=function()return 'NUCLEAR_DETECTION'end,open=function()end}}}
+ local disk,sent=run({{[1]='ASSIGN',[2]='computer-12345678',[3]='NUC-1',[4]='nuclear',destination='PENDING-COMPUTER'}},f)
+ local assigned=false
+ for _,e in ipairs(sent)do if e.kind=='ENROLL_ACK' and e.source=='NUC-1' then assigned=true end end
+ assert(assigned,'nuclear satellite was not automatically assigned')
+end
 local failed=0
 for name,test in pairs(tests)do local ok,err=pcall(test);print((ok and 'PASS ' or 'FAIL ')..name..(ok and '' or ': '..err));if not ok then failed=failed+1 end end
 assert(failed==0,tostring(failed)..' failures')

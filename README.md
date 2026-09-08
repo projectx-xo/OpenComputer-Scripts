@@ -1,4 +1,6 @@
-# STRATCOM 3.5.0
+# STRATCOM 3.8.0
+
+For nuclear monitoring and post-blast intelligence scans, see [STRATCOM 3.8.0](docs/release-3.8.0.md).
 
 Command software for Minecraft OpenComputers and HBM Nuclear Tech. CENTRAL manages strike, defense, radar and combined-intelligence nodes over the existing wireless mesh.
 

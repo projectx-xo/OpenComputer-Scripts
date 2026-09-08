@@ -9,7 +9,7 @@ local keyboard = require("keyboard")
 local auth = options.auth
 if not auth then local ok, loaded = pcall(require, "stratcom.auth"); if ok then auth = loaded end end
 
-local VERSION = "3.1.1"
+local VERSION = "3.2.0"
 local CENTRAL_ID = "CENTRAL"
 local CONFIG_PATH = "/home/stratcom/config.lua"
 local AUTH_PATH = "/home/stratcom/auth.key"
@@ -112,18 +112,20 @@ local function classifyHardware()
     for _, address in ipairs(componentAddresses("ntm_radome")) do radars[#radars + 1] = address end
     local ordinary = componentAddresses("ntm_launch_pad")
     local custom = componentAddresses("ntm_custom_launch_pad")
-    local intel = 0
+    local intel, nuclear = 0, 0
     for _, address in ipairs(componentAddresses("ntm_satlink")) do
         local ok, satelliteType = pcall(component.invoke, address, "getType")
         if ok and satelliteType == "COMBINED_INTEL" then intel = intel + 1 end
+        if ok and satelliteType == "NUCLEAR_DETECTION" then nuclear = nuclear + 1 end
     end
 
-    local families = (#radars > 0 and 1 or 0) + ((#ordinary + #custom) > 0 and 1 or 0) + (intel > 0 and 1 or 0)
-    local evidence = {radars=#radars, ordinaryPads=#ordinary, customPads=#custom, intelLinks=intel}
+    local families = (#radars > 0 and 1 or 0) + ((#ordinary + #custom) > 0 and 1 or 0) + (intel > 0 and 1 or 0) + (nuclear > 0 and 1 or 0)
+    local evidence = {radars=#radars, ordinaryPads=#ordinary, customPads=#custom, intelLinks=intel, nuclearLinks=nuclear}
     if families == 0 then return nil, "WAITING_FOR_HARDWARE", evidence end
     if families > 1 then return nil, "AMBIGUOUS_HARDWARE", evidence end
     if #radars > 0 then return "radar", "RADAR", evidence end
     if intel > 0 then return "intel", "INTEL", evidence end
+    if nuclear > 0 then return "nuclear", "NUCLEAR", evidence end
     if #custom > 0 or #ordinary > 1 then return "strike", "LAUNCH_GROUP", evidence end
 
     local ok, payload = pcall(component.invoke, ordinary[1], "getPayloadIdentity")

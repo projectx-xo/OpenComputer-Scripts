@@ -12,9 +12,9 @@ while i<=#args do
 end
 local kind, role, id = positional[1], positional[2], positional[3]
 local automatic = kind == 'node' and role == nil and id == nil
-assert(kind=='central' or kind=='node', 'usage: install.lua central | node [<strike|defense|radar|intel> <id>] [--network ID --key-file PATH] [--source URL | --bundle DIRECTORY]')
+assert(kind=='central' or kind=='node', 'usage: install.lua central | node [<strike|defense|radar|intel|nuclear> <id>] [--network ID --key-file PATH] [--source URL | --bundle DIRECTORY]')
 if kind=='node' and not automatic then
-    assert(({strike=true,defense=true,radar=true,intel=true})[role], 'invalid node role')
+    assert(({strike=true,defense=true,radar=true,intel=true,nuclear=true})[role], 'invalid node role')
     assert(type(id)=='string' and id:match('^[%w_%-]+$') and #id<=64, 'invalid node id')
     id=id:upper()
 end

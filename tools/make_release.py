@@ -7,8 +7,8 @@ import subprocess
 import zlib
 
 FILES = [
-    'central/central.lua', 'central/hologram.lua', 'central/site_intel.lua', 'bootstrap/bootstrap.lua', 'runtime/manifest.lua',
-    'runtime/strike.lua', 'runtime/launchpad.lua', 'runtime/radar.lua', 'runtime/intel.lua',
+    'central/central.lua', 'central/hologram.lua', 'central/site_intel.lua', 'central/nuclear.lua', 'bootstrap/bootstrap.lua', 'runtime/manifest.lua',
+    'runtime/strike.lua', 'runtime/launchpad.lua', 'runtime/radar.lua', 'runtime/intel.lua', 'runtime/nuclear.lua',
     'service/stratcom.lua', 'service/update.lua', 'service/auth.lua', 'service/rc.lua', 'service/console.lua', 'install.lua',
 ]
 parser = argparse.ArgumentParser()

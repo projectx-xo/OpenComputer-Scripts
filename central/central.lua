@@ -17,7 +17,7 @@ local function print(...)
     local parts = {}
     for i = 1, select("#", ...) do parts[i] = tostring(select(i, ...)) end
     local line = table.concat(parts, "\t")
-    local operational = line:match("^%[DEFENSE%]") or line:match("^%[COUNTERSTRIKE%]")
+    local operational = line:match("^%[NUCLEAR%]") or line:match("^%[DEFENSE%]") or line:match("^%[COUNTERSTRIKE%]")
         or line:match("^%[RADAR%] POSSIBLE LAUNCH SITE")
         or (line:match("^%[RADAR%].* ACQUIRED ") and not line:find(" ACQUIRED PLAYER ", 1, true))
     if operational and options.alert then pcall(options.alert, line) end
@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.7.0"
+local VERSION = "3.8.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -138,6 +138,7 @@ local activeEngagements = {}
 local pendingArm = nil
 local launchSites = {}
 local siteIntel
+local nuclear
 local latestCounterstrike = nil
 local nodePreferences = {}
 local enrollments = {}
@@ -680,6 +681,7 @@ local function allocateNodeId(role)
         elseif role == "defense" then candidate = "ABM-A" .. index
         elseif role == "radar" then candidate = string.format("RADAR-%02d", index)
         elseif role == "intel" then candidate = "INTEL-" .. index
+        elseif role == "nuclear" then candidate = "NUC-" .. index
         else return nil end
         if not reservedNodeId(candidate) then return candidate end
         index = index + 1
@@ -702,7 +704,7 @@ local function registerNode(id, role, bootstrapVersion, runtimeVersion, runtimeS
                 return nil
             end
         end
-        if not assignment and ({strike=true, defense=true, radar=true, intel=true})[role] then
+        if not assignment and ({strike=true, defense=true, radar=true, intel=true, nuclear=true})[role] then
             enrollments[identity] = {id=id, role=tostring(role)}
             if not savePreferences() then enrollments[identity] = nil; return nil end
         end
@@ -803,6 +805,7 @@ local function deployNode(node)
     if desiredState(node) ~= "running" then return false end
     local busy = next(activeEngagements) ~= nil or node.armed == true or (node.armedCount or 0) > 0 or (node.strikeRemaining or 0)>0 or (node.status and node.status.logisticsBusy)
     if siteIntel and siteIntel.busy(node.id) then busy = true end
+    if nuclear and nuclear.busy(node.id) then busy = true end
     for _, other in pairs(nodes) do if other.deploying then busy = true end end
     if busy then
         if not node.deployQueued then print("[DEPLOY] " .. node.id .. " queued until idle") end
@@ -1313,7 +1316,7 @@ local function handleMgmtEnvelope(envelope)
         local identity = tostring(payload[1] or "")
         local role = tostring(payload[2] or "")
         local state = tostring(payload[3] or "")
-        if identity == "" or not ({strike=true, defense=true, radar=true, intel=true})[role] then
+        if identity == "" or not ({strike=true, defense=true, radar=true, intel=true, nuclear=true})[role] then
             local key = identity ~= "" and identity or source
             if state ~= "" and enrollmentStates[key] ~= state then
                 enrollmentStates[key] = state
@@ -1520,6 +1523,7 @@ local function handleRuntimeEnvelope(envelope)
     local responseType = tostring(payload[1] or "")
     node.lastSeen = now()
     if siteIntel then siteIntel.receive(node, payload) end
+    if nuclear then nuclear.receive(node, payload) end
 
     if responseType == "INTERCEPT_STATUS" then
         handleInterceptorOutcome(node,payload)
@@ -1793,6 +1797,7 @@ local function printHeader()
 end
 
 local function nodeAssetSummary(node)
+    if node.role == "nuclear" then return "Nuclear Detection" end
     if node.role == "intel" then return "Combined Intelligence" end
     if node.radarStation or tostring(node.role) == "radar" then
         return tostring(node.activeTrackCount or 0) .. " TRACKS"
@@ -2226,8 +2231,8 @@ local function confirmAction(token, action)
 end
 
 local function awaitRuntimeReply(node, command, arg1, arg2)
-    if command == "SCAN" and siteIntel and siteIntel.busy(node.id) then
-        print("Launch-site verification is using " .. node.id .. "; retry after it finishes.")
+    if command == "SCAN" and ((siteIntel and siteIntel.busy(node.id)) or (nuclear and nuclear.busy(node.id))) then
+        print("An automatic intelligence scan is using " .. node.id .. "; retry after it finishes.")
         return false
     end
     local token = nextMessageId()
@@ -2689,7 +2694,6 @@ local deploymentTimer = event.timer(1, checkDeploymentTimeouts, math.huge)
 local statusTimer = event.timer(0.25, pollRuntimeStatus, math.huge)
 local pruneTimer = event.timer(PRUNE_INTERVAL, pruneSeen, math.huge)
 local defenseTimer = event.timer(1, defenseTick, math.huge)
-local siteIntelTimer
 if options.appDir then
     local chunk, err = loadfile(options.appDir .. "/central/site_intel.lua")
     if chunk then
@@ -2699,12 +2703,31 @@ if options.appDir then
             available=function(node, active)
                 return node.role == "intel" and node.claimed and nodeOnline(node) and node.session
                     and node.runtimeState == "running" and desiredState(node) == "running" and not node.deploying
+                    and (not nuclear or not nuclear.busy(node.id))
                     and (active or (node.lastStatus and now()-node.lastStatus <= RADAR_TRACK_STALE_AFTER
                         and node.status and node.status.ready and not node.status.busy
                         and node.status.satelliteType == "COMBINED_INTEL"))
             end})
-        siteIntelTimer = event.timer(1, siteIntel.tick, math.huge)
+        siteIntel.timer = event.timer(1, siteIntel.tick, math.huge)
     else print("[INTEL] Launch-site verification unavailable: " .. tostring(err)) end
+end
+
+if options.appDir then
+    local chunk, err = loadfile(options.appDir .. "/central/nuclear.lua")
+    if chunk then
+        nuclear = chunk()({now=now, token=nextMessageId, nodes=function()return nodes end,
+            log=print, decode=serialization.unserialize,
+            send=function(id, ...)return sendOperational(getNode(id), ...)end,
+            available=function(node, active)
+                return node.role == "intel" and node.claimed and nodeOnline(node) and node.session
+                    and node.runtimeState == "running" and desiredState(node) == "running" and not node.deploying
+                    and (not siteIntel or not siteIntel.busy(node.id))
+                    and (active or (node.lastStatus and now()-node.lastStatus <= RADAR_TRACK_STALE_AFTER
+                        and node.status and node.status.ready and not node.status.busy
+                        and node.status.satelliteType == "COMBINED_INTEL"))
+            end})
+        nuclear.timer = event.timer(1, nuclear.tick, math.huge)
+    else print("[NUCLEAR] Monitoring unavailable: " .. tostring(err)) end
 end
 
 loadPreferences()
@@ -2734,6 +2757,7 @@ while running do
     if options.setBusy then
         local busy = next(activeEngagements) ~= nil or pendingConfirmation ~= nil or (hologram and hologram.busy())
         if siteIntel and siteIntel.busy() then busy = true end
+        if nuclear and nuclear.busy() then busy = true end
         for _, node in pairs(nodes) do
             if node.deploying or (nodeOnline(node) and (node.armed or (node.armedCount or 0) > 0 or (node.strikeRemaining or 0)>0 or (node.status and node.status.logisticsBusy))) then busy = true end
         end
@@ -2764,7 +2788,8 @@ defense.auto = false
 event.cancel(pruneTimer)
 if hologramTimer then event.cancel(hologramTimer) end
 event.cancel(defenseTimer)
-if siteIntelTimer then event.cancel(siteIntelTimer) end
+if siteIntel and siteIntel.timer then event.cancel(siteIntel.timer) end
+if nuclear and nuclear.timer then event.cancel(nuclear.timer) end
 event.cancel(statusTimer)
 event.cancel(deploymentTimer)
 event.ignore("modem_message", onModemMessage)
