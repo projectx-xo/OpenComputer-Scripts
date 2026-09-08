@@ -163,7 +163,7 @@ local function readObservations()
                 end
 
                 if ok and isPlayer ~= nil and tonumber(x) and tonumber(y) and tonumber(z) then
-                    if payloadClass ~= "NUCLEAR" and payloadClass ~= "THERMONUCLEAR" then payloadClass = nil end
+                    if payloadClass ~= "NUCLEAR" and payloadClass ~= "THERMONUCLEAR" and payloadClass ~= "CONVENTIONAL" then payloadClass = nil end
                     mergeObservation(observations, {
                         entityId = entityId, entityUuid = entityUuid, dimension = dimension, payloadClass = payloadClass,
                         isPlayer = isPlayer == true,

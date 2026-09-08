@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.18.0"
+local VERSION = "3.19.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -166,8 +166,10 @@ local function now()
     return computer.uptime()
 end
 
+options.counterstrikeSettings={enabled=false,salvo=1}
+
 local function savePreferences()
-    local raw = serialization.serialize({nodes = nodePreferences, enrollments = enrollments, defense = defense, abmNode = ABM_NODE_ID, hologramAddress = hologramAddress})
+    local raw = serialization.serialize({nodes = nodePreferences, enrollments = enrollments, defense = defense, abmNode = ABM_NODE_ID, hologramAddress = hologramAddress, counterstrike = options.counterstrikeSettings})
     local path = PREFERENCES_PATH .. ".tmp"
     local f, err = io.open(path, "w")
     if not f then print("[CONFIG] Save failed: " .. tostring(err)); return false end
@@ -191,6 +193,11 @@ local function loadPreferences()
     if not raw then return end
     local ok, saved = pcall(serialization.unserialize, raw)
     if not ok or type(saved) ~= "table" then return end
+    if type(saved.counterstrike)=='table' then
+        options.counterstrikeSettings.enabled=saved.counterstrike.enabled==true
+        local n=tonumber(saved.counterstrike.salvo)
+        if n and n%1==0 and n>=1 and n<=16 then options.counterstrikeSettings.salvo=n end
+    end
     if type(saved.nodes) == "table" then nodePreferences = saved.nodes end
     if type(saved.enrollments) == "table" then enrollments = saved.enrollments end
     if type(saved.abmNode) == "string" then ABM_NODE_ID = saved.abmNode end
@@ -901,7 +908,7 @@ local function applyRadarTrack(node, track)
         evaluatedSequence = previous and previous.evaluatedSequence,
         evaluatedUpdate = previous and previous.evaluatedUpdate,
         entityId = track.entityId, entityUuid = track.entityUuid, dimension = track.dimension,
-        payloadClass = track.payloadClass == "NUCLEAR" and "NUCLEAR" or track.payloadClass == "THERMONUCLEAR" and "THERMONUCLEAR" or nil,
+        payloadClass = track.payloadClass == "NUCLEAR" and "NUCLEAR" or track.payloadClass == "THERMONUCLEAR" and "THERMONUCLEAR" or track.payloadClass == "CONVENTIONAL" and "CONVENTIONAL" or nil,
         lastDefenseHoldReason = previous and previous.lastDefenseHoldReason,
         key = key,
         station = node.id,
@@ -1224,7 +1231,7 @@ local function evaluateTrackForDefense(track)
         track.threatSamples = 0
         return
     end
-    if not defense.auto or not defenseZoneConfigured() then
+    if (not defense.auto and not options.counterstrikeSettings.enabled) or not defenseZoneConfigured() then
         track.threatSamples = 0
         return
     end
@@ -1243,6 +1250,8 @@ local function evaluateTrackForDefense(track)
     track.threatSamples = (track.threatSamples or 0) + 1
     if track.threatSamples < DEFENSE_CONFIRM_SAMPLES then return end
 
+    if options.autoCounterstrike then options.autoCounterstrike.observe(track) end
+    if not defense.auto then return end
     if activeEngagements[track.key] then return end
     if track.reengageUnconfirmed then return end
     if track.lastEngaged and now() - track.lastEngaged < DEFENSE_REENGAGE_COOLDOWN then return end
@@ -1252,7 +1261,7 @@ end
 
 local function defenseTick()
     pruneFriendlyExpectations()
-    if defense.auto then
+    if defense.auto or options.counterstrikeSettings.enabled then
         for _, track in pairs(radarTracks) do
             evaluateTrackForDefense(track)
         end
@@ -2238,6 +2247,7 @@ local function awaitControl(node, port, command, afterSend, ...)
 end
 
 local function confirmAction(token, action)
+    if options.autoCounterstrike then options.autoCounterstrike.tick() end
     if options.nextCommand then
         pendingConfirmation = {token = token, action = action, expires = now() + 30}
         print("Type confirm " .. token .. " within 30 seconds, or cancel.")
@@ -2290,7 +2300,7 @@ local function scanCommand(args)
     if not ok then print("SCAN ERROR: " .. tostring(message)) end
 end
 
-local function executeStrike(node, class, count, x, z, interval, assessmentSite)
+local function executeStrike(node, class, count, x, z, interval, assessmentSite, automatic)
     interval=interval or 1
     if interval~=interval or interval<1 or interval>60 then print("REJECTED: interval must be 1 to 60 seconds.");return end
     if not node.multiLauncher then
@@ -2331,7 +2341,7 @@ local function executeStrike(node, class, count, x, z, interval, assessmentSite)
     print("")
     local expected = {}
     for _, launcher in ipairs(selected) do expected[launcher.index] = {item=launcher.missileName,hash=launcher.loadoutHash} end
-    confirmAction("STRIKE", function()
+    local action = function()
         if not awaitStatus(node) then return end
         if not node.status or node.status.strikeScheduling~=true then print("REJECTED: strike runtime changed; deploy the updated runtime.");return end
         for index, item in pairs(expected) do
@@ -2341,6 +2351,8 @@ local function executeStrike(node, class, count, x, z, interval, assessmentSite)
                 return
             end
         end
+        if automatic and (not options.counterstrikeSettings.enabled or desiredState(node)~='running'
+            or (node.status.strikeRemaining or 0)>0) then return end
         local accepted = awaitControl(node, OP_PORT, "STRIKE", function() registerFriendlyExpectation(node, #selected, x, z, "strike",(#selected-1)*interval) end,
             serialization.serialize(plan), serialization.serialize({x = x, z = z, interval=interval}))
         if accepted and assessmentSite and siteIntel then
@@ -2348,10 +2360,29 @@ local function executeStrike(node, class, count, x, z, interval, assessmentSite)
                 print('[INTEL] Post-counterstrike scan could not be queued; use scan <node> '..x..' '..z)
             end
         end
-    end)
+    end
+    if automatic then return action() end
+    confirmAction("STRIKE", action)
 end
 
 local function executeCounterstrike(args)
+    if args[2]=='auto' or args[2]=='salvo' or args[2]=='status' then
+        local settings=options.counterstrikeSettings
+        if args[2]=='status' then
+            print('Automatic counterstrike: '..(settings.enabled and 'ON' or 'OFF')..' | salvo '..settings.salvo)
+            return
+        end
+        local oldEnabled,oldSalvo=settings.enabled,settings.salvo
+        if args[2]=='auto' and (args[3]=='on' or args[3]=='off') then
+            settings.enabled=args[3]=='on'
+        elseif args[2]=='salvo' and tonumber(args[3]) and tonumber(args[3])%1==0 and tonumber(args[3])>=1 and tonumber(args[3])<=16 then
+            settings.salvo=tonumber(args[3])
+        else print('Usage: counterstrike auto on|off | counterstrike salvo <1-16> | counterstrike status');return end
+        if not savePreferences() then settings.enabled,settings.salvo=oldEnabled,oldSalvo;return end
+        if options.autoCounterstrike then options.autoCounterstrike.reset() end
+        print('[COUNTERSTRIKE] Automatic '..(settings.enabled and 'ON' or 'OFF')..' | salvo '..settings.salvo)
+        return
+    end
     local class,count=string.lower(args[2] or ""),tonumber(args[3])
     local siteId=latestCounterstrike
     if args[4] then siteId=tonumber(args[4]) end
@@ -2429,6 +2460,7 @@ local function printHelp()
     print("  logistics <node> prepare <profile> <count> | reclaim <launcher|all>")
     print("Setup: doctor [node] | hardware <node> | map <node> <label> <pad> <inventory> <side> [slot]")
     print("  alias <node> <name> | maintenance <node> on|off | defense node <node>")
+    print("  counterstrike auto on|off | counterstrike salvo <1-16> | counterstrike status")
     print("  confirm LAUNCH|STRIKE | cancel")
     print("Console: clear, help, quit (detach when installed as a service)")
     print("Service console: logs [count] | update check|status|apply|rollback")
@@ -2800,6 +2832,22 @@ if options.appDir then
 end
 
 loadPreferences()
+if options.appDir then
+    local chunk=loadfile(options.appDir..'/central/auto_counterstrike.lua')
+    if chunk then options.autoCounterstrike=chunk()({now=now,config=function()return options.counterstrikeSettings end,
+        site=function(id)return launchSites[id]end,log=print,
+        nodes=function()local list={};for _,node in pairs(nodes)do list[#list+1]=node end;return list end,
+        ready=function(node,class,count)
+            if node.role~='strike' or not node.claimed or not nodeOnline(node) or node.runtimeState~='running'
+                or desiredState(node)~='running' or node.deploying or not node.lastStatus or now()-node.lastStatus>STATUS_INTERVAL
+                or not node.multiLauncher or not node.status or not node.status.strikeScheduling
+                or (node.status.strikeRemaining or 0)>0 then return 0 end
+            return #selectPayloadLaunchers(node,class,count)
+        end,
+        dispatch=function(node,class,count,site)
+            executeStrike(node,class,count,math.floor(site.x+.5),math.floor(site.z+.5),1,site,true)
+        end}) end
+end
 if secure then print("[AUTH] Authenticated network required: " .. authState.networkId)
 else print("[AUTH] WARNING: INSECURE LEGACY NETWORK") end
 local hologramTimer

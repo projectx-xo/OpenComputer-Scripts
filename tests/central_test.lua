@@ -1,5 +1,6 @@
 -- Run from the repository root with Lua 5.2+; hardware boundaries are simulated.
 local function extract(first, following, env)
+    env.options=env.options or {};env.options.counterstrikeSettings=env.options.counterstrikeSettings or {enabled=false,salvo=1}
     if not env.tryMatchFriendlyTrack then env.tryMatchFriendlyTrack = function(track) return track.friendly end end
     if not env.hasEntityTarget then env.hasEntityTarget = function() return false end end
     local f = assert(io.open('central/central.lua')); local source = f:read('*a'); f:close()
@@ -495,6 +496,22 @@ test('ABM waits for a correlated post-launch ready status',function()
     assert(not ready(),'pad reload delay ignored')
     node.pendingStatus='loaded'
     receive({source='ABM',payload={'STATUS',{ready=true},'loaded'}});assert(ready())
+end)
+
+test('automatic strike requires enabled policy and fresh unchanged payloads',function()
+    local sent=0
+    local launcher={index=1,missileName='nuke',loadoutHash='hash',ready=true}
+    local node={id='S',multiLauncher=true,status={strikeScheduling=true},launchers={launcher}}
+    local settings={enabled=true}
+    local run=extract('executeStrike','executeCounterstrike',{
+        options={counterstrikeSettings=settings},VALID_CLASSES={nuclear=true},
+        selectPayloadLaunchers=function()return{launcher}end,print=function()end,
+        confirmAction=function()error('automatic strike unexpectedly prompted')end,
+        awaitStatus=function()return true end,desiredState=function()return 'running'end,
+        serialization={serialize=function(v)return v end},OP_PORT=4511,
+        awaitControl=function()sent=sent+1;return true end})
+    run(node,'nuclear',1,100,100,1,nil,true);assert(sent==1)
+    settings.enabled=false;run(node,'nuclear',1,100,100,1,nil,true);assert(sent==1)
 end)
 
 if failures > 0 then error(tostring(failures) .. ' central regression tests failed') end

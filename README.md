@@ -1,4 +1,4 @@
-# STRATCOM 3.18.0
+# STRATCOM 3.19.0
 
 **Update the fleet from CENTRAL with `upgrade`; inspect progress with `upgrade status`.** For the first transition from an older release, run `update check` on CENTRAL. [Update guide](docs/easy-updates.md).
 
@@ -454,3 +454,11 @@ CENTRAL now correlates a registered strike with the heading from the missile's f
 With the updated mod and radar runtime, Advanced Radome observations include `NUCLEAR` or `THERMONUCLEAR` for recognized missile warheads, and STRATCOM adds that classification to radar/defense type labels. Missile tier and automatic-defense eligibility remain unchanged. Custom nuclear and thermonuclear bunker-buster warheads are classified from their payload data; unknown and conventional payloads are not inferred nuclear. Standard radars retain their old detection capability, and older callbacks remain supported. These changes require deploying the updated radar runtime and CENTRAL alongside matching mod JARs on server and clients.
 
 After a confirmed counterstrike receives a successful launch acknowledgment, CENTRAL queues a follow-up intelligence scan after 180 seconds plus salvo spacing. It waits for a free intelligence node and reports launch hardware still detected or not detected; absence is not proof of destruction. Use `hologram show <intel-node>` and `hologram terrain on` to inspect the result. This delay is not impact confirmation. Pending assessments are not replayed after CENTRAL restarts.
+
+## Automatic counterstrikes
+
+Off by default. Configure CENTRAL with `counterstrike salvo 3`, then `counterstrike auto on`; inspect with `counterstrike status`, disable with `counterstrike auto off`. Salvo accepts 1–16, default 1. Enabling explicitly authorizes automatic STRIKE commands without per-strike confirmation. Settings persist, but queued responses do not resume after restart; only new incoming tracks after startup/enabling qualify.
+
+Requires a configured defense protection zone, fresh radar threat confirmation and an associated launch site. ABM auto can be off independently. Friendly and unknown-payload tracks do not trigger responses. Conventional threats receive conventional payloads. Nuclear/thermonuclear threats prefer nuclear, then bunker, then conventional. Selection spans ready, online, running strike nodes; stopped/maintenance nodes are excluded. If the preferred available class cannot fill the requested salvo, only its available quantity is sent and logged. Requests expire after 120 seconds without a target or payloads. Each track/entity is consumed once before dispatch; uncertain sends are never automatically replayed. Disabling drops queued work; already accepted salvos may still finish.
+
+Explicit conventional detection requires HBM v1.19 and radar runtime 1.4.0 on an Advanced Radome. Older/non-classifying radar observations remain unknown. Counterstrikes use the associated launch-site coordinates, which can be estimates; automatic intelligence follow-up remains enabled after accepted responses.
