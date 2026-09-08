@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.6.3"
+local VERSION = "3.6.4"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -1260,7 +1260,8 @@ local function defenseTick()
         end
         if engagement.state == "FIRED"
             and engagement.firedAt
-            and now() - (engagement.lastOutcomeAt or engagement.firedAt) >= (engagement.interceptor and 30 or DEFENSE_POST_LAUNCH_TIMEOUT)
+            and ((engagement.trackLostAt and now()-engagement.trackLostAt >= 30)
+                or now() - (engagement.lastOutcomeAt or engagement.firedAt) >= (engagement.interceptor and 30 or DEFENSE_POST_LAUNCH_TIMEOUT))
         then
             local track = radarTracks[key]
             -- The observation window is not the interceptor's flight time.
@@ -1285,6 +1286,11 @@ local function handleTrackLostForDefense(key)
     local engagement = activeEngagements[key]
     if not engagement then return end
 
+    if engagement.state == "FIRED" and engagement.interceptor and engagement.entityTarget then
+        -- Radar loss can arrive before the correlated hardware result.
+        engagement.trackLostAt = engagement.trackLostAt or now()
+        return
+    end
     if engagement.state == "FIRED" or engagement.state == "LAUNCHING" then
         finishEngagement(engagement, "UNCONFIRMED", "CONTACT_LOST_AFTER_ENGAGEMENT")
     elseif engagement.state == "ARMING" then
@@ -1474,6 +1480,10 @@ local function handleInterceptorOutcome(node, payload)
         if e.state=="FIRED" and e.abmNode==node.id and e.abmSession==node.session
             and e.outcomeToken and payload[3]==e.outcomeToken then
             e.outcomeToken=nil
+            if payload[2]=="INTERCEPTED" then
+                finishEngagement(e,"INTERCEPTED","CONFIRMED_BY_ABM")
+                return
+            end
             if payload[2]=="IN_FLIGHT" or payload[2]=="MISS" then e.lastOutcomeAt=now() end
             local track=radarTracks[key]
             if payload[2]~="MISS" then e.missSamples=0;e.firstMiss=nil;return end

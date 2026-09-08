@@ -438,4 +438,18 @@ test('intelligence asset label is complete and link columns align',function()
     assert(column)
 end)
 
+test('correlated hit survives radar loss and ends as intercepted',function()
+    local e={state='FIRED',interceptor='shot',entityTarget={},abmNode='ABM',abmSession='session',outcomeToken='request'}
+    local active={track=e};local state
+    local env={activeEngagements=active,now=function()return 5 end,
+        finishEngagement=function(_,value)state=value end}
+    extract('handleTrackLostForDefense','handleMgmtEnvelope',env)('track')
+    assert(not state and e.trackLostAt==5)
+    local receive=extract('handleInterceptorOutcome','handleRuntimeEnvelope',env)
+    receive({id='ABM',session='session'},{'INTERCEPT_STATUS','INTERCEPTED','old-request'})
+    assert(not state)
+    receive({id='ABM',session='session'},{'INTERCEPT_STATUS','INTERCEPTED','request'})
+    assert(state=='INTERCEPTED')
+end)
+
 if failures > 0 then error(tostring(failures) .. ' central regression tests failed') end
