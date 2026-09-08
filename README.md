@@ -1,4 +1,4 @@
-# STRATCOM 3.16.0
+# STRATCOM 3.17.0
 
 **Update the fleet from CENTRAL with `upgrade`; inspect progress with `upgrade status`.** For the first transition from an older release, run `update check` on CENTRAL. [Update guide](docs/easy-updates.md).
 
@@ -452,3 +452,5 @@ CENTRAL now correlates a registered strike with the heading from the missile's f
 ### Radome payload classification
 
 With the updated mod and radar runtime, Advanced Radome observations include `NUCLEAR` or `THERMONUCLEAR` for recognized missile warheads, and STRATCOM adds that classification to radar/defense type labels. Missile tier and automatic-defense eligibility remain unchanged. Custom nuclear and thermonuclear bunker-buster warheads are classified from their payload data; unknown and conventional payloads are not inferred nuclear. Standard radars retain their old detection capability, and older callbacks remain supported. These changes require deploying the updated radar runtime and CENTRAL alongside matching mod JARs on server and clients.
+
+After a confirmed counterstrike receives a successful launch acknowledgment, CENTRAL queues a follow-up intelligence scan after 180 seconds plus salvo spacing. It waits for a free intelligence node and reports launch hardware still detected or not detected; absence is not proof of destruction. Use `hologram show <intel-node>` and `hologram terrain on` to inspect the result. This delay is not impact confirmation. Pending assessments are not replayed after CENTRAL restarts.

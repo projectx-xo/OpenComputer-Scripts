@@ -53,3 +53,14 @@ print('PASS launch-site verification: correlation, paginated selection, exact co
 f=fixture();f.site.verificationRadius=4;token=f:start();f:complete(token)
 f:rows('108,40,200,108,40,200,1,LAUNCH_INFRASTRUCTURE,100,1,LAUNCHPAD',true)
 assert(not f.site.verified,'neighboring launch pad incorrectly verified this origin')
+
+-- A previously verified site still gets a delayed post-strike scan.
+f=fixture();f.site.verified={frame='before'};assert(f.api.assess(f.site,180))
+f.api.tick();assert(#f.sent==0)
+f.clock=180;f.api.tick();token=f.sent[#f.sent][5];assert(f.api.busy())
+f:complete(token);f:rows('',true)
+assert(not f.api.busy() and f.site.assessmentState:find('destruction unconfirmed',1,true))
+assert(f.site.verified.frame=='before' and f.site.x==100,'assessment changed original site')
+f=fixture();f.api.assess(f.site,0);f.api.tick();token=f.sent[#f.sent][5]
+f:complete(token);f:rows('100,64,200,100,64,200,1,LAUNCH_SITE,100,1,LAUNCHPAD',true)
+assert(f.site.assessmentState:find('STILL DETECTED',1,true))

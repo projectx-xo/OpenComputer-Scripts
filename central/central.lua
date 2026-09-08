@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.16.0"
+local VERSION = "3.17.0"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -2275,7 +2275,7 @@ local function scanCommand(args)
     if not ok then print("SCAN ERROR: " .. tostring(message)) end
 end
 
-local function executeStrike(node, class, count, x, z, interval)
+local function executeStrike(node, class, count, x, z, interval, assessmentSite)
     interval=interval or 1
     if interval~=interval or interval<1 or interval>60 then print("REJECTED: interval must be 1 to 60 seconds.");return end
     if not node.multiLauncher then
@@ -2326,8 +2326,13 @@ local function executeStrike(node, class, count, x, z, interval)
                 return
             end
         end
-        awaitControl(node, OP_PORT, "STRIKE", function() registerFriendlyExpectation(node, #selected, x, z, "strike",(#selected-1)*interval) end,
+        local accepted = awaitControl(node, OP_PORT, "STRIKE", function() registerFriendlyExpectation(node, #selected, x, z, "strike",(#selected-1)*interval) end,
             serialization.serialize(plan), serialization.serialize({x = x, z = z, interval=interval}))
+        if accepted and assessmentSite and siteIntel then
+            if not siteIntel.assess(assessmentSite,180+(#selected-1)*interval) then
+                print('[INTEL] Post-counterstrike scan could not be queued; use scan <node> '..x..' '..z)
+            end
+        end
     end)
 end
 
@@ -2355,7 +2360,7 @@ local function executeCounterstrike(args)
             if fresh and node.multiLauncher and #selectPayloadLaunchers(node,class,count)>=count then
                 print("Launch site #"..site.id.." | confidence="..tostring(site.confidence)
                     .. (site.verified and " | satellite-verified target" or " | origin is an estimate"))
-                executeStrike(node,class,count,math.floor(site.x+.5),math.floor(site.z+.5),interval)
+                executeStrike(node,class,count,math.floor(site.x+.5),math.floor(site.z+.5),interval,site)
                 return
             end
         end

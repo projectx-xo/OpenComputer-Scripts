@@ -4,10 +4,10 @@ return function(ctx)
     local function finish(state)
         local job = active
         if not job then return end
-        job.site.intelState = state
+        if job.assessment then job.site.assessmentState=state else job.site.intelState = state end
         job.site.intelCheckedAt = ctx.now()
         if ctx.save() == false then ctx.log('[INTEL] Could not save launch-site verification; result is available in memory only.') end
-        ctx.log('[INTEL] Launch site #' .. job.site.id .. ': ' .. state)
+        ctx.log((job.assessment and '[INTEL] Post-counterstrike site #' or '[INTEL] Launch site #') .. job.site.id .. ': ' .. state)
         active = nil
     end
     local function page()
@@ -25,6 +25,14 @@ return function(ctx)
         if count >= 32 then return end
         pending[site.id] = {site=site, expires=ctx.now()+300}
     end
+    function api.assess(site, delay)
+        if active and active.site.id==site.id then return false end
+        local count=0;for _ in pairs(pending) do count=count+1 end
+        if count>=32 and not pending[site.id] then return false end
+        pending[site.id]={site=site,assessment=true,ready=ctx.now()+delay,expires=ctx.now()+delay+600}
+        ctx.log('[INTEL] Post-counterstrike scan queued for site #'..site.id..'; launch acknowledgment is not impact confirmation.')
+        return true
+    end
     function api.busy(id) return active and (not id or active.node.id == id) or false end
     function api.tick()
         if active then
@@ -34,8 +42,10 @@ return function(ctx)
         end
         local nextJob
         for id, job in pairs(pending) do
-            if ctx.now() >= job.expires then pending[id] = nil
-            elseif not nextJob or id < nextJob.site.id then nextJob = job end
+            if ctx.now() >= job.expires then
+                if job.assessment then ctx.log('[INTEL] Post-counterstrike site #'..id..': UNCONFIRMED — no scanner available') end
+                pending[id] = nil
+            elseif (not job.ready or ctx.now()>=job.ready) and (not nextJob or id < nextJob.site.id) then nextJob = job end
         end
         if not nextJob then return end
         local selected
@@ -44,9 +54,10 @@ return function(ctx)
         end
         if not selected then return end
         pending[nextJob.site.id] = nil
-        active = {site=nextJob.site,node=selected,session=selected.session,token=ctx.token(),
+        active = {site=nextJob.site,assessment=nextJob.assessment,node=selected,session=selected.session,token=ctx.token(),
             x=math.floor(nextJob.site.x+.5),z=math.floor(nextJob.site.z+.5),deadline=ctx.now()+180}
-        nextJob.site.intelState = 'SCANNING'
+        if nextJob.assessment then ctx.log('[INTEL] Post-counterstrike scan started on '..selected.id..' for site #'..nextJob.site.id)
+        else nextJob.site.intelState = 'SCANNING' end
         if not ctx.send(selected.id,'SCAN',active.x,active.z,active.token) then finish('SEND_FAILED') end
     end
     function api.receive(node, p)
@@ -88,6 +99,11 @@ return function(ctx)
         if not p[6] then
             if job.page>=16 then finish('INVALID_FINDINGS');return end
             job.page=job.page+1;page();return
+        end
+        if job.assessment then
+            if job.best then finish('LAUNCH HARDWARE STILL DETECTED; effect unconfirmed')
+            else finish('NO LAUNCH HARDWARE DETECTED; destruction unconfirmed — review hologram show '..node.id) end
+            return
         end
         if job.best then
             local site,b=job.site,job.best
