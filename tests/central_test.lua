@@ -421,4 +421,21 @@ test('maintenance intent is retried until the node enters maintenance', function
     assert(sent=='MAINTENANCE','lost maintenance command was never retried')
 end)
 
+test('intelligence asset label is complete and link columns align',function()
+    local summary=extract('nodeAssetSummary','printNodes',{clip=function(v)return v or '---'end})
+    assert(summary({role='intel'})=='Combined Intelligence')
+    local lines={}
+    local render=extract('printNodes','printLauncherTable',{
+        nodes={I={role='intel'},R={role='radar'}},nodeAssetSummary=summary,
+        nodeOnline=function()return true end,clip=function(v)return v or '---'end,
+        print=function(v)lines[#lines+1]=v end})
+    render()
+    local column
+    for _,line in ipairs(lines)do
+        local position=line:find('ONLINE',1,true)
+        if position then if column then assert(column==position)else column=position end end
+    end
+    assert(column)
+end)
+
 if failures > 0 then error(tostring(failures) .. ' central regression tests failed') end

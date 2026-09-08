@@ -29,7 +29,7 @@ local function print(...)
     else consolePrint(line) end
 end
 
-local VERSION = "3.6.2"
+local VERSION = "3.6.3"
 local CENTRAL_ID = "CENTRAL"
 local AUTH_PATH = "/home/stratcom/auth.key"
 local AUTH_EPOCH_PATH = "/home/stratcom/auth-epoch.txt"
@@ -1776,6 +1776,7 @@ local function printHeader()
 end
 
 local function nodeAssetSummary(node)
+    if node.role == "intel" then return "Combined Intelligence" end
     if node.radarStation or tostring(node.role) == "radar" then
         return tostring(node.activeTrackCount or 0) .. " TRACKS"
     end
@@ -1787,13 +1788,13 @@ end
 
 local function printNodes()
     print("")
-    print("NODE       ROLE       RUNTIME   STATE     ASSET                LINK")
+    print("NODE       ROLE       RUNTIME   STATE     ASSET                 LINK")
     print("---------------------------------------------------------------------")
     local found = false
     for id, node in pairs(nodes) do
         found = true
         print(string.format(
-            "%-10s %-10s %-9s %-9s %-20s %s",
+            "%-10s %-10s %-9s %-9s %-21s %s",
             id,
             string.upper(tostring(node.role)),
             clip(node.runtimeVersion, 9),
