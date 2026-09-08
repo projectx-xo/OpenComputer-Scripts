@@ -1,8 +1,8 @@
 return {
-    version = "3.12.0",
-    ref = "933fe24d728543967e511572867162b86c646585",
+    version = "3.13.0",
+    ref = "5d5d4caa4394db0cd9df3738d04eead34f669ccd",
     files = {
-        ["central/central.lua"] = {size = 128817, checksum = "9ecd694f"},
+        ["central/central.lua"] = {size = 130013, checksum = "1fbcf012"},
         ["central/hologram.lua"] = {size = 19242, checksum = "128e2c92"},
         ["central/site_intel.lua"] = {size = 5341, checksum = "e81a42c4"},
         ["central/nuclear.lua"] = {size = 4769, checksum = "8e8a7dbd"},
@@ -16,13 +16,13 @@ return {
         ["runtime/intel.lua"] = {size = 11462, checksum = "e854d390"},
         ["runtime/nuclear.lua"] = {size = 3215, checksum = "f3b63754"},
         ["ui/node_status.lua"] = {size = 4853, checksum = "f318e4a4"},
-        ["ui/node_status_model.lua"] = {size = 3777, checksum = "2681aff7"},
-        ["ui/install_console.lua"] = {size = 999, checksum = "f2d05e41"},
+        ["ui/node_status_model.lua"] = {size = 4769, checksum = "f2f5df5d"},
+        ["ui/install_console.lua"] = {size = 994, checksum = "1fd65c7b"},
         ["service/stratcom.lua"] = {size = 10348, checksum = "7a6c3a82"},
         ["service/update.lua"] = {size = 8675, checksum = "23d2b384"},
         ["service/auth.lua"] = {size = 13489, checksum = "96f265d0"},
         ["service/rc.lua"] = {size = 349, checksum = "69447d54"},
-        ["service/console.lua"] = {size = 4098, checksum = "12474fa7"},
+        ["service/console.lua"] = {size = 4139, checksum = "d0cd5e27"},
         ["install.lua"] = {size = 6932, checksum = "282f5d64"},
     },
 }
