@@ -1,0 +1,24 @@
+name: Lua checks
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lua: ['5.2', '5.3']
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install Lua
+        run: sudo apt-get update && sudo apt-get install -y lua${{ matrix.lua }}
+      - name: Syntax and behavior
+        env:
+          LUA: lua${{ matrix.lua }}
+          LUAC: luac${{ matrix.lua }}
+        run: |
+          set -eu
+          find central bootstrap runtime service tests -name '*.lua' -exec "$LUAC" -p {} \;
+          "$LUAC" -p install.lua
+          for test in tests/*_test.lua; do
+            "$LUA" "$test"
+          done
+          if [ -f release.lua ]; then python3 tools/check_release.py; fi
