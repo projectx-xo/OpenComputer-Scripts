@@ -1,0 +1,52 @@
+name: CI
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ci-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    validate:
+        name: Validate release
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: Install Lua 5.2
+              run: |
+                  set -euo pipefail
+                  sudo apt-get update
+                  sudo apt-get install --no-install-recommends -y lua5.2
+
+            - name: Check Lua syntax
+              run: |
+                  set -euo pipefail
+                  while IFS= read -r -d '' file; do
+                      echo "Checking ${file}"
+                      luac5.2 -p "${file}"
+                  done < <(
+                      find bootstrap central node runtime \
+                          -type f -name '*.lua' -print0
+                  )
+
+            - name: Validate release metadata
+              env:
+                  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+              run: |
+                  set -euo pipefail
+                  python3 tools/validate_release.py
