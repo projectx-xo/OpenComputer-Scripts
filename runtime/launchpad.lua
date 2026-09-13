@@ -3,8 +3,10 @@ local serialization = require("serialization")
 
 local context = nil
 local launchPad = nil
+local launchPadAddress = nil
 local inventory = nil
 local armed = false
+local inventoryCache = nil
 
 local MISSILE_PREFIX = "hbm:item.missile_"
 local BATTERY_PREFIX = "hbm:item.battery_"
@@ -14,7 +16,7 @@ local ABM_CENTRAL_ID = "hbm:item.missile_anti-ballistic"
 local function findComponent(componentType)
     local address = component.list(componentType)()
     if not address then return nil end
-    return component.proxy(address)
+    return component.proxy(address), address
 end
 
 local function startsWith(value, prefix)
@@ -24,6 +26,13 @@ end
 
 local function getMissileInfo()
     if not inventory then return "", "", 0, nil end
+    if inventoryCache then
+        local ok, stack = pcall(inventory.getStackInSlot, inventoryCache.side, inventoryCache.slot)
+        if ok and stack and startsWith(stack.name, MISSILE_PREFIX) then
+            return stack.name, stack.label or stack.name, tonumber(stack.size) or 0, inventoryCache.side
+        end
+        inventoryCache = nil
+    end
 
     local batterySide = nil
 
@@ -36,6 +45,7 @@ local function getMissileInfo()
                     local name = tostring(stack.name or "")
 
                     if startsWith(name, MISSILE_PREFIX) then
+                        inventoryCache = {side=side,slot=slot}
                         return name,
                             tostring(stack.label or name),
                             tonumber(stack.size) or 0,
@@ -71,7 +81,16 @@ local function getStatus()
 
     if tier == nil then tier = -1 end
 
+    local position
+    -- A cached proxy can omit getPos even while the component accepts it.
+    local ok, x, y, z = pcall(component.invoke, launchPadAddress, "getPos")
+    if ok then position = {x=x, y=y, z=z} end
+
+    local targetingOk, targeting, dimension = pcall(component.invoke, launchPadAddress, "getTargetingInfo")
     return {
+        entityTargeting = targetingOk and targeting == true,
+        dimension = targetingOk and dimension or nil,
+        position = position,
         armed = armed,
         ready = launchPad.canLaunch(),
         tier = tier,
@@ -95,8 +114,9 @@ local runtime = {}
 
 function runtime.start(ctx)
     context = assert(ctx, "runtime context is required")
-    launchPad = findComponent("ntm_launch_pad")
+    launchPad, launchPadAddress = findComponent("ntm_launch_pad")
     inventory = findComponent("inventory_controller")
+    inventoryCache = nil
     armed = false
 
     if not launchPad then
@@ -122,6 +142,10 @@ function runtime.stop()
     end
 end
 
+function runtime.busy()
+    return armed
+end
+
 function runtime.tick()
 end
 
@@ -130,6 +154,16 @@ function runtime.status()
 end
 
 function runtime.onMessage(remoteAddress, command, arg1, arg2)
+    if command == "INTERCEPT_STATUS" then
+        local ok, outcome = pcall(function()
+            local q=serialization.unserialize(arg1)
+            assert(type(q)=='table' and type(q.interceptor)=='string' and type(q.entityUuid)=='string'
+                and type(q.entityId)=='number' and type(q.dimension)=='number','INVALID_TARGET')
+            return component.invoke(launchPadAddress,'getInterceptorStatus',q.interceptor,q.entityId,q.entityUuid,q.dimension)
+        end)
+        context.send(remoteAddress,'INTERCEPT_STATUS',ok and outcome or 'UNKNOWN',arg2)
+        return
+    end
     if command == "PING" then
         context.send(remoteAddress, "PONG", context.role)
         return
@@ -149,6 +183,23 @@ function runtime.onMessage(remoteAddress, command, arg1, arg2)
     if command == "DISARM" then
         armed = false
         context.send(remoteAddress, "ACK", "DISARM", true)
+        return
+    end
+
+    if command == "LAUNCH_ENTITY" then
+        if not armed then context.send(remoteAddress, "ERROR", "DISARMED"); return end
+        local ok, target = pcall(serialization.unserialize, arg1 or "")
+        if not ok or type(target) ~= "table" or type(target.entityId) ~= "number"
+            or target.entityId % 1 ~= 0 or type(target.entityUuid) ~= "string" or #target.entityUuid ~= 36
+            or type(target.dimension) ~= "number" or target.dimension % 1 ~= 0 then
+            armed = false
+            context.send(remoteAddress, "ERROR", "INVALID_TARGET"); return
+        end
+        local invoked, success, reason, interceptor = pcall(component.invoke, launchPadAddress, "launchTracked",
+            target.entityId, target.entityUuid, target.dimension)
+        armed = false
+        context.send(remoteAddress, "LAUNCH_RESULT", invoked and success == true, target.entityId,
+            invoked and reason or "TARGET_CALLBACK_FAILED", invoked and interceptor or nil)
         return
     end
 

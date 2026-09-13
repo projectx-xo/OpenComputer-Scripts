@@ -1,0 +1,19 @@
+# STRATCOM 3.8.0 — Nuclear Detection Satellites
+
+**Update correction (3.10.0):** bootstrap code updates with the application bundle. Reinstalling it is unnecessary. Use [the fleet update procedure](easy-updates.md); local reinstall applies only to actual stable service-helper changes.
+
+Requires tjHBM-NTM 1.14 on the server and clients. The new Nuclear Detection Satellite reports loaded nuclear/thermonuclear missile sightings and nuclear detonations, with exact available coordinates, dimension and world tick. These are observations, not predicted targets or automatic strike authorization. Explosion reports currently provide X/Z; altitude is omitted when the source does not supply it.
+
+Launch a Nuclear Detection Satellite and tune a Satellite Ground Station to its frequency. Connect that station to its own OpenComputers node, plus a modem or a separate communications-satellite station for the STRATCOM network. Install the node in automatic mode (no role or name arguments). Bootstrap 3.2.0 recognizes the hardware and CENTRAL assigns NUC-1, NUC-2, etc., then deploys nuclear runtime 1.0.0. The asset column reads Nuclear Detection. Keep the existing Combined Intelligence Satellite on its INTEL node; mixing both sensing types on one computer is ambiguous.
+
+CENTRAL prints live [NUCLEAR] observations. After a detonation, it waits 60 seconds and requests a post-blast scan from an idle Combined Intelligence Satellite. Scan-start, completion and failure messages appear automatically. Completed frames use the existing projection/hologram path. This is a terrain reconstruction after the blast, not a photographic screenshot, damage percentage, or proof that terrain destruction has finished. Launch-site verification and damage scans share intelligence nodes without replacing each other's active jobs.
+
+Detections inspect loaded entities only, in batches of at most 256 per second per dimension while polled. Short-lived or unloaded missiles can be missed. Explosion coverage uses the mod's existing nuclear burst hooks; ordinary radar/accelerator emissions are excluded. The detector keeps at most 256 observations for ten minutes in server memory, so server restarts clear that history. Packets contain at most eight observations, retry until acknowledged, and persist the consumed cursor on the node. CENTRAL suppresses repeated event IDs in a bounded memory window. Central restart clears deduplication and pending image requests; it is not a permanent event archive. Gaps caused by expiry/overflow are reported.
+
+Post-blast scans queue at most 16 locations and expire after ten minutes if no intelligence node becomes available. Scans time out after three minutes. Terrain must already be loaded and within the existing intelligence scan's coverage; no terrain is loaded just to inspect it. If the matching dimension cannot be confirmed, completion is not reported as a verified post-blast view.
+
+## Updating
+
+Update CENTRAL using `update check` then `update apply` in the STRATCOM console. Once healthy, use `sync` and `deploy all` to distribute runtimes. For a new detection node, use a freshly downloaded installer and the existing automatic `node -- --source ...` installation form. An existing node using an older bootstrap must have its service stopped and be reinstalled locally to acquire bootstrap 3.2.0; application update alone cannot replace stable bootstrap helpers. Preserve the current network/key provisioning options.
+
+Validation: Lua 5.2/5.3 suites and syntax checks, plus Java 8 build and JUnit checks. Live client/server satellite launch, OpenComputers callbacks, radio loss and projection rendering still need in-game verification.

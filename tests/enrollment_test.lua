@@ -1,0 +1,95 @@
+local function read(path)local f=assert(io.open(path));local value=f:read('*a');f:close();return value end
+local function extract(source,first,following,returned,env)
+    local a=assert(source:find('local function '..first..'(',1,true),first)
+    local b=assert(source:find('local function '..following..'(',a+1,true),following)
+    return assert(load(source:sub(a,b-1)..'\nreturn '..returned,first,'t',setmetatable(env,{__index=_G})))()
+end
+local failures=0
+local function test(name,fn)local ok,err=pcall(fn);print((ok and 'PASS ' or 'FAIL ')..name..(ok and '' or ': '..tostring(err)));if not ok then failures=failures+1 end end
+
+local bootstrap=read('bootstrap/bootstrap.lua')
+local function classifier(devices,types,payload)
+    local component={}
+    component.list=function(kind)local list=devices[kind] or {};local i=0;return function()i=i+1;return list[i]end end
+    component.invoke=function(address,method)
+        if method=='getType' then return types[address] end
+        assert(method=='getPayloadIdentity');return payload
+    end
+    devices.ntm_satlink={}
+    for address in pairs(types or {})do devices.ntm_satlink[#devices.ntm_satlink+1]=address end
+    -- No accepted communications proxies: detection must inspect hardware directly.
+    return extract(bootstrap,'componentAddresses','now','classifyHardware',{component=component,satlinks={}})
+
+end
+
+test('hardware classification is conservative and communications links are transport only',function()
+    local role,state=classifier({ntm_radar={'r'}},{})();assert(role=='radar' and state=='RADAR')
+    role,state=classifier({},{comm='SATCOM_RELAY'})();assert(role==nil and state=='WAITING_FOR_HARDWARE')
+    role,state=classifier({}, {intel='COMBINED_INTEL'})();assert(role=='intel' and state=='INTEL')
+    role,state=classifier({ntm_launch_pad={'p'}},{},'anti_ballistic')();assert(role=='defense' and state=='ABM')
+    role,state=classifier({ntm_launch_pad={'p'}},{},'other')();assert(role=='strike' and state=='STRIKE')
+    role,state=classifier({ntm_launch_pad={'p'}},{},'empty')();assert(role==nil and state=='WAITING_FOR_PAYLOAD')
+    role,state=classifier({ntm_launch_pad={'a','b'}},{})();assert(role=='strike' and state=='LAUNCH_GROUP')
+    role,state=classifier({ntm_launch_pad={'p'},ntm_radar={'r'}},{},'other')();assert(role==nil and state=='AMBIGUOUS_HARDWARE')
+end)
+
+local central=read('central/central.lua')
+test('allocator follows conventions and skips IDs and aliases',function()
+    local allocate=extract(central,'reservedNodeId','registerNode','allocateNodeId',{
+        nodes={['SILO-S1']={}},nodePreferences={OLD={alias='SILO-S2'},['RADAR-01']={}},
+        enrollments={x={id='ABM-A1',role='defense'}}})
+    assert(allocate('strike')=='SILO-S3')
+    assert(allocate('defense')=='ABM-A2')
+    assert(allocate('radar')=='RADAR-02')
+    assert(allocate('intel')=='SAT-1')
+end)
+
+test('pending heartbeat cannot reserve an unassigned identity',function()
+    local records={}
+    local register=extract(central,'registerNode','deploymentChunk','registerNode',{
+        enrollments=records,nodes={},radarTracks={},now=function()return 1 end,
+        savePreferences=function()error('pending identity must not be persisted')end,
+        sendMgmt=function()end,print=function()end})
+    assert(register('PENDING-94D387BD','unassigned','3.1.1','none','missing','running','s','94d387bd-full'))
+    assert(next(records)==nil)
+end)
+
+test('persisted pending identity migrates but established roles remain protected',function()
+    for _,saveOK in ipairs({true,false})do
+        local old={id='PENDING-94D387BD',role='unassigned'}
+        local records={['94d387bd-full']=old};local nodes={[old.id]={}};local sent=0
+        local receive=extract(central,'handleMgmtEnvelope','handleRadarTrackEvent','handleMgmtEnvelope',{
+            enrollments=records,nodes=nodes,enrollmentStates={},MGMT_PORT=4510,
+            allocateNodeId=function()return 'INTEL-1'end,savePreferences=function()return saveOK end,
+            originate=function()sent=sent+1 end,print=function()end})
+        receive({source=old.id,kind='BOOT_ENROLL',payload={'94d387bd-full','intel','INTEL'}})
+        if saveOK then
+            assert(records['94d387bd-full'].id=='INTEL-1' and nodes[old.id]==nil and sent==1)
+            receive({source=old.id,kind='BOOT_ENROLL',payload={'94d387bd-full','strike','STRIKE'}})
+            assert(records['94d387bd-full'].role=='intel' and sent==1)
+        else assert(records['94d387bd-full']==old and nodes[old.id] and sent==0)end
+    end
+end)
+
+test('dual transport reuses one envelope and duplicate delivery executes once',function()
+    local sent={}
+    local transmit=extract(central,'transmitWire','originate','transmitEnvelope',{
+        serialization={serialize=function(value)return value end},
+        secure=false,
+        modem={broadcast=function(_,_,encoded)sent[#sent+1]=encoded;return true end},
+        satlinks={{proxy={broadcast=function(_,_,encoded)sent[#sent+1]=encoded;return 1 end}}},
+    })
+    local envelope={protocol=2,id='same',source='N',destination='CENTRAL',kind='BOOT_HELLO',ttl=1,payload={}}
+    assert(transmit(4510,envelope) and #sent==2 and sent[1]==sent[2])
+
+    local handled=0
+    local receive=extract(central,'handleEnvelope','onModemMessage','handleEnvelope',{
+        validEnvelope=function()return true end,seenMessages={},now=function()return 1 end,CENTRAL_ID='CENTRAL',
+        collectOperatorReply=function()end,commandOutput=nil,pendingOperator=nil,MGMT_PORT=4510,OP_PORT=4511,
+        handleMgmtEnvelope=function()handled=handled+1 end,handleRuntimeEnvelope=function()end,
+    })
+    receive(4510,envelope);receive(4510,envelope)
+    assert(handled==1,'duplicate envelope executed twice')
+end)
+
+assert(failures==0,tostring(failures)..' failures')

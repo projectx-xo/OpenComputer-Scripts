@@ -8,6 +8,7 @@ local radars = {}
 local tracks = {}
 local nextTrackId = 1
 local scanTimer = nil
+local lastHardwareCheck = 0
 
 local POLL_INTERVAL = 0.25
 local UPDATE_INTERVAL = 1.0
@@ -60,7 +61,7 @@ end
 
 local function heading(dx, dz)
     if dx == 0 and dz == 0 then return 0 end
-    local angle = math.deg(math.atan(dx, -dz))
+    local angle = math.deg((math.atan2 or math.atan)(dx, -dz))
     if angle < 0 then angle = angle + 360 end
     return angle
 end
@@ -72,6 +73,9 @@ local function cardinal(angle)
 end
 
 local function compatible(a, b)
+    if a.entityUuid or b.entityUuid then
+        if a.entityUuid ~= b.entityUuid or a.entityId ~= b.entityId or a.dimension ~= b.dimension then return false end
+    end
     if a.typeId ~= b.typeId or a.isPlayer ~= b.isPlayer then return false end
     if a.isPlayer then
         return tostring(a.name or "") == tostring(b.name or "")
@@ -104,6 +108,7 @@ local function mergeObservation(observations, incoming)
     end
 
     if best then
+        if incoming.payloadClass then best.payloadClass = incoming.payloadClass; best.typeName = incoming.typeName end
         if not contains(best.radars, incoming.radar) then
             table.insert(best.radars, incoming.radar)
         end
@@ -150,17 +155,23 @@ local function readObservations()
         if okAmount then
             amount = tonumber(amount) or 0
             for index = 1, amount do
-                local ok, isPlayer, x, y, z, typeId, name =
-                    safeCall(radar.proxy, "getEntityAtIndex", index)
+                local ok, isPlayer, x, y, z, typeId, name, entityId, entityUuid, dimension, payloadClass =
+                    pcall(component.invoke, radar.address, "getTrackedEntityAtIndex", index)
+                if not ok then
+                    ok, isPlayer, x, y, z, typeId, name = safeCall(radar.proxy, "getEntityAtIndex", index)
+                    entityId, entityUuid, dimension, payloadClass = nil, nil, nil, nil
+                end
 
-                if ok and x ~= nil then
+                if ok and isPlayer ~= nil and tonumber(x) and tonumber(y) and tonumber(z) then
+                    if payloadClass ~= "NUCLEAR" and payloadClass ~= "THERMONUCLEAR" and payloadClass ~= "CONVENTIONAL" then payloadClass = nil end
                     mergeObservation(observations, {
+                        entityId = entityId, entityUuid = entityUuid, dimension = dimension, payloadClass = payloadClass,
                         isPlayer = isPlayer == true,
                         x = tonumber(x) or 0,
                         y = tonumber(y) or 0,
                         z = tonumber(z) or 0,
                         typeId = tonumber(typeId) or -1,
-                        typeName = typeName(typeId),
+                        typeName = typeName(typeId) .. (payloadClass and (" [" .. payloadClass .. "]") or ""),
                         name = name,
                         radar = radar.short,
                     })
@@ -174,7 +185,10 @@ end
 
 local function publicTrack(track)
     return {
+        entityId = track.entityId, entityUuid = track.entityUuid, dimension = track.dimension, payloadClass = track.payloadClass,
         id = track.id,
+        session = context.session,
+        sequence = track.sequence,
         typeId = track.typeId,
         typeName = track.typeName,
         isPlayer = track.isPlayer,
@@ -213,7 +227,9 @@ local function acquireTrack(observation, timestamp)
     nextTrackId = nextTrackId + 1
 
     local track = {
+        entityId = observation.entityId, entityUuid = observation.entityUuid, dimension = observation.dimension, payloadClass = observation.payloadClass,
         id = id,
+        sequence = 1,
         typeId = observation.typeId,
         typeName = observation.typeName,
         isPlayer = observation.isPlayer,
@@ -240,6 +256,10 @@ local function acquireTrack(observation, timestamp)
 end
 
 local function updateTrack(track, observation, timestamp)
+    if observation.payloadClass then
+        track.payloadClass = observation.payloadClass
+        track.typeName = observation.typeName
+    end
     local dt = timestamp - track.lastSeen
     if dt <= 0 then dt = POLL_INTERVAL end
 
@@ -257,6 +277,7 @@ local function updateTrack(track, observation, timestamp)
     track.heading = heading(track.vx, track.vz)
     track.radars = observation.radars
     track.lastSeen = timestamp
+    track.sequence = track.sequence + 1
     track.matched = true
 
     if timestamp - track.lastBroadcast >= UPDATE_INTERVAL then
@@ -270,7 +291,7 @@ local function findBestTrack(observation, timestamp)
     local bestDistance = nil
 
     for _, track in pairs(tracks) do
-        if not track.matched and track.typeId == observation.typeId
+        if not track.matched and compatible(track, observation) and track.typeId == observation.typeId
             and track.isPlayer == observation.isPlayer
         then
             local nameCompatible = not track.isPlayer
@@ -286,7 +307,7 @@ local function findBestTrack(observation, timestamp)
                     observation.x, observation.y, observation.z
                 )
 
-                if d <= MATCH_DISTANCE and (not bestDistance or d < bestDistance) then
+                if (observation.entityUuid or d <= MATCH_DISTANCE) and (not bestDistance or d < bestDistance) then
                     best = track
                     bestDistance = d
                 end
@@ -331,13 +352,13 @@ local function scan()
     expireTracks(timestamp)
 end
 
-local function getStatus()
+local function getStatus(detail)
     local result = {
         radarStation = true,
         radarCount = #radars,
         activeTrackCount = 0,
         radars = {},
-        tracks = {},
+        tracks = detail ~= "summary" and {} or nil,
     }
 
     for index, radar in ipairs(radars) do
@@ -345,11 +366,22 @@ local function getStatus()
     end
 
     for id, track in pairs(tracks) do
-        result.tracks[id] = publicTrack(track)
+        if result.tracks then result.tracks[id] = publicTrack(track) end
         result.activeTrackCount = result.activeTrackCount + 1
     end
 
     return result
+end
+
+local function radarAddresses()
+    local addresses = {}
+    for _, kind in ipairs({"ntm_radar", "ntm_radome"}) do
+        for address in component.list(kind, true) do
+            addresses[#addresses + 1] = address
+        end
+    end
+    table.sort(addresses)
+    return addresses
 end
 
 local runtime = {}
@@ -359,15 +391,12 @@ function runtime.start(ctx)
     radars = {}
     tracks = {}
     nextTrackId = 1
+    context.session = context.session or (tostring(context.id) .. ":" .. tostring(now()) .. ":" .. tostring(math.random(100000,999999)))
 
-    local addresses = {}
-    for address in component.list("ntm_radar") do
-        table.insert(addresses, address)
-    end
-    table.sort(addresses)
+    local addresses = radarAddresses()
 
     if #addresses < 1 then
-        error("No ntm_radar components detected")
+        error("No ntm_radar or ntm_radome components detected")
     end
 
     for _, address in ipairs(addresses) do
@@ -398,11 +427,22 @@ function runtime.stop()
     context = nil
 end
 
-function runtime.tick()
+function runtime.busy()
+    return false
 end
 
-function runtime.status()
-    return getStatus()
+function runtime.tick()
+    if now() - lastHardwareCheck < 10 then return end
+    local refreshed = {}
+    for _, address in ipairs(radarAddresses()) do
+        refreshed[#refreshed + 1] = {address=address,short=address:sub(1,8),proxy=component.proxy(address)}
+    end
+    radars = refreshed
+    lastHardwareCheck = now()
+end
+
+function runtime.status(detail)
+    return getStatus(detail)
 end
 
 function runtime.onMessage(remoteAddress, command)
