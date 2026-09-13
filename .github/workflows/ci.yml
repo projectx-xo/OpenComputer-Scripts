@@ -40,7 +40,7 @@ jobs:
                       echo "Checking ${file}"
                       luac5.2 -p "${file}"
                   done < <(
-                      find bootstrap central node runtime \
+                      find bootstrap central maven node runtime \
                           -type f -name '*.lua' -print0
                   )
 
