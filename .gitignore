@@ -1,0 +1,5 @@
+# Local testing output and caches
+/work/
+.DS_Store
+__pycache__/
+*.py[cod]
