@@ -282,7 +282,12 @@ local function savePayloadCatalog()
     return true
 end
 
-local function payloadClass(itemId)
+local function payloadClass(itemId, reported)
+    if itemId == "hbm:item.missile_custom" then
+        if reported == "thermonuclear" then return "nuclear" end
+        if reported == "nuclear" or reported == "conventional" or reported == "bunker" or reported == "special" then return reported end
+        return "unknown"
+    end
     local entry = payloadCatalog[tostring(itemId or "")]
     return entry and tostring(entry.class) or "unknown"
 end
@@ -985,7 +990,7 @@ local function applyRuntimeStatus(node, status)
     if status.radarStation == true then
         applyRadarStatus(node, status)
         node.lastStatus = now()
-        return
+        if status.skyguard ~= true then return end
     end
 
     node.multiLauncher = status.multiLauncher == true
@@ -1056,7 +1061,8 @@ local function abmReady()
     if not node.lastStatus or now() - node.lastStatus > RADAR_TRACK_STALE_AFTER then return false, "ABM_STATUS_STALE" end
     if node.abmReloadRequired then return false, "ABM_WAITING_FOR_RELOAD_STATUS" end
     if node.ready ~= true then return false, "ABM_NOT_READY" end
-    if tostring(node.missileName or "") ~= ABM_MISSILE_ID then
+    if tostring(node.missileName or "") ~= ABM_MISSILE_ID
+        and not (node.status and node.status.skyguard==true and node.missileName=="hbm:item.missile_skyguard") then
         return false, "WRONG_ABM_PAYLOAD"
     end
     return true, node
@@ -1070,6 +1076,18 @@ local function hasEntityTarget(node, track)
 end
 
 local function abmInRange(node, track)
+    if node and node.status and node.status.skyguard then
+        local p=node.status.position
+        if not hasEntityTarget(node,track) then return false,"SKYGUARD_REQUIRES_ENTITY_TRACK" end
+        if type(p)~="table" then return false,"ABM_POSITION_UNAVAILABLE" end
+        local distance2=0
+        for _, axis in ipairs({"x","y","z"}) do
+            local a,b=tonumber(p[axis]),tonumber(track[axis])
+            if not a or not b or a~=a or b~=b or math.abs(a)==math.huge or math.abs(b)==math.huge then return false,"POSITION_INVALID" end
+            distance2=distance2+(a-b)^2
+        end
+        if distance2>768*768 then return false,"TARGET_OUT_OF_RANGE" end
+    end
     if hasEntityTarget(node, track) then
         if node.status.dimension ~= track.dimension then return false, "WRONG_DIMENSION" end
         if not track.lastUpdate or now() - track.lastUpdate > RADAR_TRACK_STALE_AFTER then return false, "TARGET_STALE" end
@@ -1823,6 +1841,7 @@ local function printHeader()
 end
 
 local function nodeAssetSummary(node)
+    if node.status and node.status.skyguard then return tostring(node.missileCount or 0).." ROUNDS / "..tostring(node.activeTrackCount or 0).." TRACKS" end
     if node.role == "nuclear" then return "Nuclear Detection" end
     if node.role == "intel" then return "Combined Intelligence" end
     if node.radarStation or tostring(node.role) == "radar" then
@@ -1862,7 +1881,7 @@ local function printLauncherTable(node)
         print(string.format(
             "%-9s %-13s %-5s %-5s %s",
             clip(launcher.label or ("L" .. tostring(launcher.index)), 9),
-            string.upper(payloadClass(launcher.missileName)),
+            string.upper(payloadClass(launcher.missileName, launcher.payloadClass)),
             launcher.ready and "YES" or "NO",
             launcher.armed and "YES" or "NO",
             clip(launcher.missileLabel, 27)
@@ -1971,7 +1990,7 @@ local function printStatus(node)
     if not node then print("Node not found."); return end
     if tostring(node.role) == "radar" or node.radarStation then
         printRadarNode(node)
-        return
+        if not (node.status and node.status.skyguard) then return end
     end
 
     print("")
@@ -2000,6 +2019,7 @@ local function printStatus(node)
         print("")
         printLauncherTable(node)
     else
+        if node.status and node.status.skyguard then print("Skyguard:    " .. tostring(node.status.state)) end
         print("Missile:     " .. clip(node.missileLabel, 30))
         print("Item:        " .. clip(node.missileName, 30))
         print("Count:       " .. tostring(node.missileCount or 0))
@@ -2058,7 +2078,7 @@ local function printPayloads(node)
     local counts = {nuclear = 0, conventional = 0, bunker = 0, special = 0, unknown = 0}
     for _, launcher in ipairs(node.launchers or {}) do
         if launcher.ready and launcher.missileName and launcher.missileName ~= "" then
-            local class = payloadClass(launcher.missileName)
+            local class = payloadClass(launcher.missileName, launcher.payloadClass)
             counts[class] = (counts[class] or 0) + 1
         end
     end
@@ -2184,7 +2204,7 @@ local function selectPayloadLaunchers(node, class, count)
     local selected = {}
     for _, launcher in ipairs(node.launchers or {}) do
         if launcher.ready and launcher.missileName and launcher.missileName ~= ""
-            and payloadClass(launcher.missileName) == class
+            and payloadClass(launcher.missileName, launcher.payloadClass) == class
         then
             table.insert(selected, launcher)
             if #selected >= count then break end
@@ -2340,13 +2360,13 @@ local function executeStrike(node, class, count, x, z, interval, assessmentSite,
     end
     print("")
     local expected = {}
-    for _, launcher in ipairs(selected) do expected[launcher.index] = {item=launcher.missileName,hash=launcher.loadoutHash} end
+    for _, launcher in ipairs(selected) do expected[launcher.index] = {item=launcher.missileName,hash=launcher.loadoutHash,class=payloadClass(launcher.missileName, launcher.payloadClass)} end
     local action = function()
         if not awaitStatus(node) then return end
         if not node.status or node.status.strikeScheduling~=true then print("REJECTED: strike runtime changed; deploy the updated runtime.");return end
         for index, item in pairs(expected) do
             local current = node.launchers and node.launchers[index]
-            if not current or not current.ready or current.missileName ~= item.item or current.loadoutHash ~= item.hash then
+            if not current or not current.ready or current.missileName ~= item.item or current.loadoutHash ~= item.hash or payloadClass(current.missileName, current.payloadClass) ~= item.class then
                 print("REJECTED: launcher inventory changed; create a new strike plan.")
                 return
             end
@@ -2421,6 +2441,7 @@ local function printHelp()
     print("  deploy <node|all> | start <node> | stop <node> | restart <node>")
     print("")
     print("Radar:")
+    print("  skyguard <node> deploy|stow|filter BALLISTIC|MISSILES on|off")
     print("  radars")
     print("  radar <node>")
     print("  tracks [node]")
@@ -2585,6 +2606,19 @@ local function execute(line)
         elseif args[2] then print("Usage: upgrade | upgrade status")
         else local ok,reason=options.fleetUpdate.start();print(reason) end
     elseif command == "nodes" then printNodes()
+    elseif command == "skyguard" then
+        local node=getNode(args[2]); local action=string.lower(args[3] or "")
+        if not node or not node.status or node.status.skyguard~=true then print("Request status first for a Skyguard defense node."); return end
+        local request={action=action}
+        if action=="filter" then
+            request.category=string.upper(args[4] or "")
+            local value=string.lower(args[5] or "")
+            if (request.category~="BALLISTIC" and request.category~="MISSILES") or (value~="on" and value~="off") then
+                print("Usage: skyguard <node> filter BALLISTIC|MISSILES on|off"); return
+            end
+            request.enabled=value=="on"
+        elseif action~="deploy" and action~="stow" then print("Usage: skyguard <node> deploy|stow|filter BALLISTIC|MISSILES on|off"); return end
+        sendOperational(node,"SKYGUARD_CONTROL",serialization.serialize(request))
     elseif command == "radars" then printRadars()
     elseif command == "radar" then
         local node = getNode(args[2]); if not node then print("Usage: radar <node>"); return end

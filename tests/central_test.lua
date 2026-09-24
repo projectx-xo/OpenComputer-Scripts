@@ -372,7 +372,25 @@ test('new radar observations retain the existing range-hold reason',function()
     assert(track.lastDefenseHoldReason=='TARGET_OUT_OF_RANGE','range-hold alert repeats on every observation')
 end)
 
-test('summary status retains tracked objects', function()
+test('integrated radar status also updates defense ammo and readiness',function()
+    local radarApplied=0
+    local apply=extract('applyRuntimeStatus','automaticThreatType',{now=function()return 100 end,
+        applyRadarStatus=function()radarApplied=radarApplied+1 end})
+    local node={id='ABM-A1'}
+    apply(node,{skyguard=true,radarStation=true,ready=true,missileName='hbm:item.missile_skyguard',missileCount=5})
+    assert(radarApplied==1 and node.ready and node.missileCount==5)
+end)
+
+test('Skyguard entity handoff retains spherical range and stale-track gates',function()
+    local check=extract('abmInRange','historyPush',{now=function()return 100 end,RADAR_TRACK_STALE_AFTER=10,
+        hasEntityTarget=function()return true end})
+    local node={status={skyguard=true,dimension=0,position={x=0,y=4,z=0}}}
+    local t={entityId=7,entityUuid='u',dimension=0,x=0,y=772,z=0,lastUpdate=100}
+    assert(check(node,t));t.y=773;assert(not check(node,t))
+    t.y=100;t.lastUpdate=80;assert(not check(node,t));t.lastUpdate=100;t.dimension=1;assert(not check(node,t))
+end)
+
+test('summary status retains tracked objects' , function()
     local tracks = {['RADAR:1'] = {station = 'RADAR'}}
     local apply = extract('applyRadarStatus', 'applyRuntimeStatus', {radarTracks = tracks})
     apply({id = 'RADAR'}, {radarStation = true, activeTrackCount = 1})
@@ -426,7 +444,7 @@ test('removed team integration preserves explicit strike confirmation',function(
     local warned,confirmation,launched=false,nil,false
     local launcher={index=1,missileName='nuke',missileLabel='Nuke',loadoutHash='hash',ready=true}
     local node={id='SILO',multiLauncher=true,status={strikeScheduling=true},launchers={launcher}}
-    local run=extract('executeStrike','executeCounterstrike',{
+    local run=extract('executeStrike','executeCounterstrike',{payloadClass=function(_,value)return value or 'unknown'end,
         VALID_CLASSES={nuclear=true},selectPayloadLaunchers=function()return {launcher}end,
         options={teamAssets={warn=function()warned=true end}},print=function()end,
         confirmAction=function(token,fn)assert(not warned);confirmation=fn;assert(token=='STRIKE')end,
@@ -440,6 +458,7 @@ end)
 test('intelligence asset label is complete and link columns align',function()
     local summary=extract('nodeAssetSummary','printNodes',{clip=function(v)return v or '---'end})
     assert(summary({role='intel'})=='Combined Intelligence')
+    assert(summary({status={skyguard=true},missileCount=5,activeTrackCount=2})=='5 ROUNDS / 2 TRACKS')
     local lines={}
     local render=extract('printNodes','printLauncherTable',{
         options={},nodes={I={role='intel'},R={role='radar'}},nodeAssetSummary=summary,
@@ -503,7 +522,7 @@ test('automatic strike requires enabled policy and fresh unchanged payloads',fun
     local launcher={index=1,missileName='nuke',loadoutHash='hash',ready=true}
     local node={id='S',multiLauncher=true,status={strikeScheduling=true},launchers={launcher}}
     local settings={enabled=true}
-    local run=extract('executeStrike','executeCounterstrike',{
+    local run=extract('executeStrike','executeCounterstrike',{payloadClass=function(_,value)return value or 'unknown'end,
         options={counterstrikeSettings=settings},VALID_CLASSES={nuclear=true},
         selectPayloadLaunchers=function()return{launcher}end,print=function()end,
         confirmAction=function()error('automatic strike unexpectedly prompted')end,
@@ -512,6 +531,17 @@ test('automatic strike requires enabled policy and fresh unchanged payloads',fun
         awaitControl=function()sent=sent+1;return true end})
     run(node,'nuclear',1,100,100,1,nil,true);assert(sent==1)
     settings.enabled=false;run(node,'nuclear',1,100,100,1,nil,true);assert(sent==1)
+end)
+
+test('custom payload classification uses warhead rather than shared item override',function()
+    local classify=extract('payloadClass','saveLaunchSites',{payloadCatalog={['hbm:item.missile_custom']={class='nuclear'},ordinary={class='bunker'}}})
+    assert(classify('hbm:item.missile_custom','conventional')=='conventional')
+    assert(classify('hbm:item.missile_custom','nuclear')=='nuclear')
+    assert(classify('hbm:item.missile_custom','thermonuclear')=='nuclear')
+    assert(classify('hbm:item.missile_custom','bunker')=='bunker')
+    assert(classify('hbm:item.missile_custom')=='unknown')
+    assert(classify('hbm:item.missile_custom','bad')=='unknown')
+    assert(classify('ordinary')=='bunker')
 end)
 
 if failures > 0 then error(tostring(failures) .. ' central regression tests failed') end

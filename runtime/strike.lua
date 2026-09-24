@@ -165,6 +165,11 @@ local function launcherStatus(index, force)
             and (not logistics.job) or false
     end
     local missileName, missileLabel, missileCount, inventorySide = scanInventory(entry, force)
+    local payloadClass
+    if entry.custom then
+        local ok, _, value = pcall(entry.pad.getPayloadIdentity)
+        if ok and type(value) == "string" then payloadClass = value:lower() end
+    end
     if tier == nil then tier = -1 end
 
     return {
@@ -192,6 +197,7 @@ local function launcherStatus(index, force)
         oxidizer = oxidizer or 0,
         oxidizerMax = oxidizerMax or 0,
         oxidizerType = tostring(oxidizerType),
+        payloadClass = payloadClass,
         missileName = missileName,
         missileLabel = missileLabel,
         missileCount = missileCount,

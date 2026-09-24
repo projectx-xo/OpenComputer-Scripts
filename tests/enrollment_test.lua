@@ -33,6 +33,12 @@ test('hardware classification is conservative and communications links are trans
     role,state=classifier({ntm_launch_pad={'p'},ntm_radar={'r'}},{},'other')();assert(role==nil and state=='AMBIGUOUS_HARDWARE')
 end)
 
+test('one Skyguard enrolls as defense and mixed or duplicate hardware is rejected',function()
+    local role,state=classifier({ntm_skyguard={'s'}},{})();assert(role=='defense' and state=='SKYGUARD')
+    role,state=classifier({ntm_skyguard={'s','t'}},{})();assert(role==nil and state=='AMBIGUOUS_SKYGUARD')
+    role,state=classifier({ntm_skyguard={'s'},ntm_launch_pad={'p'}},{},'anti_ballistic')();assert(role==nil and state=='AMBIGUOUS_HARDWARE')
+end)
+
 local central=read('central/central.lua')
 test('allocator follows conventions and skips IDs and aliases',function()
     local allocate=extract(central,'reservedNodeId','registerNode','allocateNodeId',{

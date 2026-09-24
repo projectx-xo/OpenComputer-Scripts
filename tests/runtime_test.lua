@@ -65,6 +65,11 @@ test('custom Large Launch Pads use their designator and custom callbacks',functi
         getStackInSlot=function()return {name='hbm:item.missile_custom',size=1}end}}}
     local r,ctx=loadRuntime('runtime/strike.lua',devices);r.start(ctx)
     assert(r.status().launchers[1].ready,'custom pad not ready')
+    assert(r.status().launchers[1].payloadClass==nil, 'older callback should stay unknown')
+    custom.getPayloadIdentity=function()return 'other','NUCLEAR'end
+    assert(r.status().launchers[1].payloadClass=='nuclear')
+    custom.getPayloadIdentity=function()return 'other','CONVENTIONAL'end
+    assert(r.status().launchers[1].payloadClass=='conventional')
     r.onMessage('CENTRAL','ARM','1')
     r.onMessage('CENTRAL','LAUNCH_SILO','1',serialize({x=507,z=1709}))
     assert(launched and coords[1]==507 and coords[2]==1709,'custom pad did not launch at the requested coordinates')
@@ -331,6 +336,56 @@ test('physical mapping does not assign a shared controller side twice',function(
         i={kind='inventory_controller',proxy={getInventorySize=function()return 1 end}}}
     local r,ctx=loadRuntime('runtime/strike.lua',devices);r.start(ctx)
     assert(not ctx.config.launchers[1].inventoryAddress and not ctx.config.launchers[2].inventoryAddress)
+end)
+
+local function skyguardDevice()
+    local p={state="READY",ammo=6,auto=false,contacts={{entityId=7,entityUuid="11111111-1111-1111-1111-111111111111",dimension=0,x=0,y=80,z=90,vx=0,vy=-5,vz=-20,typeId=1}}}
+    p.getState=function()return p.state end
+    p.getEnergyInfo=function()return 900000,2000000 end
+    p.getPos=function()return 0,4,0 end
+    p.getTargetingInfo=function()return true,0 end
+    p.getAmmoCount=function()return p.ammo end
+    p.canLaunch=function()return p.state=="READY" and p.ammo>0 end
+    p.getTracks=function()return p.contacts end
+    p.getAutoFire=function()return p.auto end
+    p.setAutoFire=function(value)p.auto=value;return true end
+    p.deploy=function()p.state="DEPLOYING_STABILIZERS";return true end
+    p.stow=function()p.state="STOWING_LAUNCHER";return true end
+    p.setTargetCategory=function(category,enabled)p.filter={category,enabled};return true end
+    p.launchTracked=function(id,uuid,dim)assert(id==7 and uuid==p.contacts[1].entityUuid and dim==0);p.ammo=p.ammo-1;return true,"FIRED","shot-uuid"end
+    return p
+end
+
+test('Skyguard is both a defense launcher and radar with explicit launch authorization',function()
+    local p=skyguardDevice(); local r,c,sent,advance=loadRuntime('runtime/launchpad.lua',{sg={kind='ntm_skyguard',proxy=p}})
+    c.role='defense';r.start(c); assert(c.config.skyguardAddress=='sg')
+    local st=r.status(); assert(st.skyguard and st.radarStation and st.ready and st.missileCount==6 and #st.tracks==1)
+    assert(st.tracks[1].session=='boot-A' and st.tracks[1].vz==-20 and type(st.tracks[1].id)=='number')
+    assert(r.status().tracks[1].id==st.tracks[1].id,'status renumbered a live track')
+    assert(r.status('summary').tracks==nil and r.status('summary').activeTrackCount==1,'summary payload omitted count or included full tracks')
+    r.tick(); assert(sent[#sent][2]=='RADAR_TRACK')
+    local target=serialize({entityId=7,entityUuid=p.contacts[1].entityUuid,dimension=0})
+    r.onMessage('CENTRAL','LAUNCH_ENTITY',target);assert(p.ammo==6 and sent[#sent][3]=='DISARMED')
+    r.onMessage('CENTRAL','ARM');r.onMessage('CENTRAL','LAUNCH_ENTITY',target)
+    assert(p.ammo==5 and sent[#sent][2]=='LAUNCH_RESULT' and sent[#sent][3]==true and sent[#sent][6]=='shot-uuid')
+    r.onMessage('CENTRAL','LAUNCH_ENTITY',target);assert(p.ammo==5)
+    p.contacts={};advance(1);r.tick();assert(sent[#sent][3]:find('LOST'))
+    p.getPos=function()error('disconnected')end
+    assert(not r.status().ready and r.status().state=='UNAVAILABLE' and #r.status().tracks==0)
+    r.stop();r.start(c);assert(not r.status().armed)
+end)
+
+test('Skyguard controls whitelist and persisted hardware mapping fail closed',function()
+    local p=skyguardDevice();local devices={sg={kind='ntm_skyguard',proxy=p}}
+    local r,c,sent=loadRuntime('runtime/launchpad.lua',devices);c.role='defense';r.start(c)
+    r.onMessage('CENTRAL','SKYGUARD_CONTROL',serialize({action='deploy'}),'request1');assert(p.state=='DEPLOYING_STABILIZERS' and sent[#sent][5]=='request1')
+    r.onMessage('CENTRAL','SKYGUARD_CONTROL',serialize({action='fire'}));assert(p.ammo==6 and sent[#sent][4]==false)
+    r.onMessage('CENTRAL','SKYGUARD_CONTROL',serialize({action='filter',category='PLAYERS',enabled=true}));assert(not p.filter)
+    r.onMessage('CENTRAL','SKYGUARD_CONTROL',serialize({action='filter',category='BALLISTIC',enabled=false}));assert(p.filter[1]=='BALLISTIC' and p.filter[2]==false)
+    r.onMessage('CENTRAL','ARM');r.onMessage('CENTRAL','SKYGUARD_CONTROL',serialize({action='stow'}));assert(not r.busy())
+    r.stop();devices.sg=nil;devices.other={kind='ntm_skyguard',proxy=p};assert(not pcall(r.start,c),'silently rebound to another link')
+    c.config={};devices.third={kind='ntm_skyguard',proxy=p};assert(not pcall(r.start,c),'ambiguous links accepted')
+    devices.third=nil;devices.pad={kind='ntm_launch_pad',proxy=pad()};assert(not pcall(r.start,c),'mixed pads accepted')
 end)
 
 if failures>0 then error(failures..' runtime tests failed') end

@@ -75,3 +75,7 @@ assert(load(source:sub(start,finish-1),'snapshot','t',env))()
 local data=env.options.dashboardSnapshot()
 assert(data.total==2 and data.online==1 and data.network=='BLUE' and data.defenseAuto==false)
 assert(data.nodes[1].id=='A' and data.nodes[2].online==false)
+
+local sg=model({id='ABM-A1',role='defense',health={skyguard=true,radarStation=true,state='READY',ready=true,missileCount=5,activeTrackCount=2,energy=800000,maxEnergy=2000000}},{state='running'},'',0)
+local combined='';for _,r in ipairs(sg)do combined=combined..r.text..'\n' end
+assert(combined:find('Interceptors: 5/6',1,true) and combined:find('Tracks: 2',1,true) and combined:find('M240 Skyguard: READY',1,true),'integrated dashboard lost ammo or tracks')

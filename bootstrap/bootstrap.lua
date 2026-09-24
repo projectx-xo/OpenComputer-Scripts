@@ -108,6 +108,7 @@ local function componentAddresses(kind)
 end
 
 local function classifyHardware()
+    local skyguards = componentAddresses("ntm_skyguard")
     local radars = componentAddresses("ntm_radar")
     for _, address in ipairs(componentAddresses("ntm_radome")) do radars[#radars + 1] = address end
     local ordinary = componentAddresses("ntm_launch_pad")
@@ -119,10 +120,12 @@ local function classifyHardware()
         if ok and satelliteType == "NUCLEAR_DETECTION" then nuclear = nuclear + 1 end
     end
 
-    local families = (#radars > 0 and 1 or 0) + ((#ordinary + #custom) > 0 and 1 or 0) + (intel > 0 and 1 or 0) + (nuclear > 0 and 1 or 0)
-    local evidence = {radars=#radars, ordinaryPads=#ordinary, customPads=#custom, intelLinks=intel, nuclearLinks=nuclear}
+    local families = (#skyguards > 0 and 1 or 0) + (#radars > 0 and 1 or 0) + ((#ordinary + #custom) > 0 and 1 or 0) + (intel > 0 and 1 or 0) + (nuclear > 0 and 1 or 0)
+    local evidence = {skyguards=#skyguards, radars=#radars, ordinaryPads=#ordinary, customPads=#custom, intelLinks=intel, nuclearLinks=nuclear}
     if families == 0 then return nil, "WAITING_FOR_HARDWARE", evidence end
     if families > 1 then return nil, "AMBIGUOUS_HARDWARE", evidence end
+    if #skyguards == 1 then return "defense", "SKYGUARD", evidence end
+    if #skyguards > 1 then return nil, "AMBIGUOUS_SKYGUARD", evidence end
     if #radars > 0 then return "radar", "RADAR", evidence end
     if intel > 0 then return "intel", "INTEL", evidence end
     if nuclear > 0 then return "nuclear", "NUCLEAR", evidence end

@@ -462,3 +462,8 @@ Off by default. Configure CENTRAL with `counterstrike salvo 3`, then `counterstr
 Requires a configured defense protection zone, fresh radar threat confirmation and an associated launch site. ABM auto can be off independently. Friendly and unknown-payload tracks do not trigger responses. Conventional threats receive conventional payloads. Nuclear/thermonuclear threats prefer nuclear, then bunker, then conventional. Selection spans ready, online, running strike nodes; stopped/maintenance nodes are excluded. If the preferred available class cannot fill the requested salvo, only its available quantity is sent and logged. Requests expire after 120 seconds without a target or payloads. Each track/entity is consumed once before dispatch; uncertain sends are never automatically replayed. Disabling drops queued work; already accepted salvos may still finish.
 
 Explicit conventional detection requires HBM v1.19 and radar runtime 1.4.0 on an Advanced Radome. Older/non-classifying radar observations remain unknown. Counterstrikes use the associated launch-site coordinates, which can be estimates; automatic intelligence follow-up remains enabled after accepted responses.
+
+### Skyguard integration (local development)
+
+[Skyguard setup and controls](docs/skyguard.md) covers the integrated radar/defense
+node supported by the updated mod and local STRATCOM sources.

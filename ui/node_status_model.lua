@@ -38,6 +38,11 @@ return function(snapshot, service, logText, age)
             row('L'..clean(l.index or i)..'  '..clean(l.missileLabel)..'  READY '..yes(l.ready)..'  ARMED '..yes(l.armed),l.armed and 'warn' or (l.ready and 'good' or 'normal'))
         end
         if h.logisticsBusy then row('Logistics transfer active','warn') end
+    elseif h.skyguard then
+        row("M240 Skyguard: "..clean(h.state),h.ready and "good" or "warn")
+        row("Interceptors: "..clean(h.missileCount).."/6   Tracks: "..clean(h.activeTrackCount))
+        row("Ready: "..yes(h.ready).."   Armed: "..yes(h.armed))
+        row("HE: "..clean(h.energy).."/"..clean(h.maxEnergy))
     elseif h.radarStation then
         row('Radars: '..clean(h.radarCount)..'   Active tracks: '..clean(h.activeTrackCount),'good')
     elseif h.intelligence then
